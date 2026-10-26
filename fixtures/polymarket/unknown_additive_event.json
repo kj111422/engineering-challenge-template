@@ -1,0 +1,6 @@
+{
+  "event_type": "future_market_event_v99",
+  "asset_id": "107505882767731489358349912513945399560393482969656700824895970500493757150417",
+  "timestamp": "1782753357257",
+  "new_optional_field": { "version": 99 }
+}

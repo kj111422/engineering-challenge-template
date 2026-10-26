@@ -78,12 +78,13 @@ symbols. The public Polymarket network test is opt-in:
 RUN_LIVE_TESTS=1 cargo test --test live_polymarket -- --ignored --nocapture
 ```
 
-The GitHub Actions workflow runs the same gates on every push; run
-[40166110564](https://github.com/kj111422/engineering-challenge-template/actions/runs/40166110564)
-passed all steps on `ubuntu-latest`. The manual live public-feed workflow
-passed in run
-[40168059177](https://github.com/kj111422/engineering-challenge-template/actions/runs/40168059177),
-executing the opt-in Polymarket integration test against the live venue.
+The current `main` commit (`9ab6cd5`) has passing GitHub Actions runs for
+[Rust CI](https://github.com/kj111422/engineering-challenge-template/actions/runs/40403111336)
+and [architecture validation](https://github.com/kj111422/engineering-challenge-template/actions/runs/40403111133).
+The separate live public-feed smoke test last passed in
+[run 40168059177](https://github.com/kj111422/engineering-challenge-template/actions/runs/40168059177)
+on an earlier source commit; treat that as live-feed evidence for that run, not
+as a live test of the current documentation-only commit.
 
 ## Quick start: Kalshi
 

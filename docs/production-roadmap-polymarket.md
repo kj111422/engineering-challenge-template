@@ -1,7 +1,7 @@
 # Polymarket Production Programme
 
 **Status:** Active engineering plan; this document sets gates, not a claim of production readiness.  
-**Baseline:** `kj111422/engineering-challenge-template` `main` at `515b8fb5b6957cacc361c791ff8e68470e1dfb6f` (2026-10-26).  
+**Baseline:** `kj111422/engineering-challenge-template` `main` at `9ab6cd5a584fea58c0086efa50d55c796e9aac4` (2026-10-26).  
 **Primary objective:** Turn the challenge collector into a reliable Polymarket market-data, research, risk, and controlled-execution platform.  
 **Execution policy:** Public-data collection and replay are permitted by default. Private credentials and live order transmission remain disabled until the relevant gates pass.
 
@@ -11,8 +11,8 @@ The current application is a Rust market-data collector. It includes Gamma keyse
 
 The current `main` commit has passing GitHub Actions runs for the Rust CI workflow and architecture workflow:
 
-- [CI — `515b8fb`](https://github.com/kj111422/engineering-challenge-template/actions/runs/40400809529)
-- [Architecture documentation — `515b8fb`](https://github.com/kj111422/engineering-challenge-template/actions/runs/40400809525)
+- [CI — `9ab6cd5`](https://github.com/kj111422/engineering-challenge-template/actions/runs/40403111336)
+- [Architecture documentation — `9ab6cd5`](https://github.com/kj111422/engineering-challenge-template/actions/runs/40403111133)
 
 The repository records 185 passing tests and 3 ignored opt-in tests. A green build establishes that the tested source compiles and the checked invariants hold; it does not prove that a long-running live feed is complete or that the application can trade safely.
 

@@ -641,4 +641,189 @@ mod tests {
         let count = registry.get("totally_new_event_kind").copied().unwrap_or(0);
         assert!(count >= 1, "unknown event type must be counted");
     }
+
+    /// These fixtures pin the raw `event_type` protocol consumed by this
+    /// adapter. The newer unified SDK `topic`/`type`/`payload` envelope is a
+    /// separate contract and must not be silently mixed into this decoder.
+    #[test]
+    fn documented_raw_book_snapshot_fixture_decodes() {
+        const ASSET: &str =
+            "107505882767731489358349912513945399560393482969656700824895970500493757150417";
+        let events = decode_polymarket_message(
+            include_str!("../../../fixtures/polymarket/book_snapshot.json"),
+            NOW,
+        )
+        .expect("documented book fixture must decode");
+        assert_eq!(events.len(), 1);
+        let ExchangeEvent::Snapshot {
+            native_symbol,
+            book,
+            meta,
+        } = &events[0]
+        else {
+            panic!("expected snapshot event");
+        };
+        assert_eq!(native_symbol, ASSET);
+        assert_eq!(book.bids.len(), 2);
+        assert_eq!(book.asks.len(), 2);
+        assert_eq!(
+            book.bids[0],
+            Level {
+                price: 80_000,
+                quantity: 33_343_400_000
+            }
+        );
+        assert_eq!(
+            book.asks[0],
+            Level {
+                price: 990_000,
+                quantity: 218_442_270_000
+            }
+        );
+        assert_eq!(meta.exchange_ts_us, Some(1_782_753_357_257_000));
+    }
+
+    #[test]
+    fn documented_multi_asset_price_change_fixture_decodes_every_change() {
+        let events = decode_polymarket_message(
+            include_str!("../../../fixtures/polymarket/price_change_multi_asset.json"),
+            NOW,
+        )
+        .expect("documented price-change fixture must decode");
+        assert_eq!(events.len(), 2);
+        let ExchangeEvent::LevelChange {
+            native_symbol,
+            side,
+            price,
+            change,
+            meta,
+        } = &events[0]
+        else {
+            panic!("expected first level change");
+        };
+        assert_eq!(
+            native_symbol,
+            "107505882767731489358349912513945399560393482969656700824895970500493757150417"
+        );
+        assert_eq!(*side, Side::Buy);
+        assert_eq!(*price, 80_000);
+        assert_eq!(*change, QuantityChange::Absolute(33_343_400_000));
+        assert_eq!(meta.exchange_ts_us, Some(1_782_753_357_257_000));
+
+        let ExchangeEvent::LevelChange {
+            native_symbol,
+            side,
+            price,
+            change,
+            ..
+        } = &events[1]
+        else {
+            panic!("expected second level change");
+        };
+        assert_eq!(
+            native_symbol,
+            "7305630249804085635496399869905769372294302716159034447326228509068694952392"
+        );
+        assert_eq!(*side, Side::Sell);
+        assert_eq!(*price, 510_000);
+        assert_eq!(*change, QuantityChange::Absolute(4_250_000));
+    }
+
+    #[test]
+    fn documented_tick_size_change_fixture_decodes() {
+        let events = decode_polymarket_message(
+            include_str!("../../../fixtures/polymarket/tick_size_change.json"),
+            NOW,
+        )
+        .expect("documented tick-size fixture must decode");
+        assert_eq!(events.len(), 1);
+        let ExchangeEvent::Lifecycle {
+            native_symbol,
+            kind,
+            tick_size_us,
+            ..
+        } = &events[0]
+        else {
+            panic!("expected lifecycle event");
+        };
+        assert_eq!(
+            native_symbol,
+            "107505882767731489358349912513945399560393482969656700824895970500493757150417"
+        );
+        assert_eq!(*kind, LifecycleKind::PriceStructureUpdated);
+        assert_eq!(*tick_size_us, Some(1_000));
+    }
+
+    #[test]
+    fn documented_market_lifecycle_fixtures_decode() {
+        let created = decode_polymarket_message(
+            include_str!("../../../fixtures/polymarket/new_market.json"),
+            NOW,
+        )
+        .expect("documented new-market fixture must decode");
+        assert_eq!(created.len(), 2);
+        for event in &created {
+            let ExchangeEvent::Lifecycle { kind, title, .. } = event else {
+                panic!("expected new-market lifecycle event");
+            };
+            assert_eq!(*kind, LifecycleKind::NewMarket);
+            assert_eq!(
+                title.as_deref(),
+                Some("Will the example event occur before the deadline?")
+            );
+        }
+
+        let resolved = decode_polymarket_message(
+            include_str!("../../../fixtures/polymarket/market_resolved.json"),
+            NOW,
+        )
+        .expect("documented market-resolved fixture must decode");
+        assert_eq!(resolved.len(), 2);
+        for event in &resolved {
+            let ExchangeEvent::Lifecycle { kind, .. } = event else {
+                panic!("expected resolution lifecycle event");
+            };
+            assert_eq!(*kind, LifecycleKind::Resolved);
+            assert!(kind.is_terminal());
+        }
+    }
+
+    #[test]
+    fn documented_best_bid_ask_is_non_mutating_and_unknown_additions_are_observable() {
+        let best_bid_ask = decode_polymarket_message(
+            include_str!("../../../fixtures/polymarket/best_bid_ask.json"),
+            NOW,
+        )
+        .expect("documented best-bid-ask event must decode");
+        assert!(best_bid_ask.is_empty());
+
+        let unknown = decode_polymarket_message(
+            include_str!("../../../fixtures/polymarket/unknown_additive_event.json"),
+            NOW,
+        )
+        .expect("unknown additive event must not tear down the feed");
+        assert!(unknown.is_empty());
+        let registry = unknown_event_types();
+        assert!(
+            registry
+                .get("future_market_event_v99")
+                .copied()
+                .unwrap_or(0)
+                >= 1,
+            "unknown event type must be counted"
+        );
+    }
+
+    #[test]
+    fn documented_malformed_multi_asset_batch_is_rejected_as_a_whole() {
+        let error = decode_polymarket_message(
+            include_str!("../../../fixtures/polymarket/malformed_price_change_atomic.json"),
+            NOW,
+        )
+        .expect_err("one malformed entry must reject the full frame");
+        assert!(
+            error.to_string().contains("side"),
+            "unexpected malformed-frame error: {error:#}"
+        );
+    }
 }

@@ -299,6 +299,21 @@ mod tests {
             .unwrap();
     }
 
+    async fn read_text(ws: &mut ServerWs) -> String {
+        loop {
+            let message = tokio::time::timeout(Duration::from_secs(5), ws.next())
+                .await
+                .expect("server read timed out")
+                .expect("server stream ended")
+                .expect("server websocket error");
+            match message {
+                Message::Text(text) => return text.to_string(),
+                Message::Ping(_) | Message::Pong(_) => continue,
+                other => panic!("unexpected client frame: {other:?}"),
+            }
+        }
+    }
+
     fn book_frame(asset: &str, price: &str, size: &str) -> Value {
         json!({
             "event_type": "book",
@@ -387,6 +402,60 @@ mod tests {
             (500_000, 12_000_000)
         );
 
+        session.close().await;
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn application_keepalive_pong_is_not_decoded_as_market_json() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let initial = read_json(&mut ws).await;
+            assert_eq!(initial["type"], "market");
+            assert_eq!(initial["assets_ids"], json!(["a"]));
+
+            // The direct market-channel contract uses text PING/PONG frames,
+            // not JSON event envelopes. A PONG must not terminate the feed.
+            assert_eq!(read_text(&mut ws).await, "PING");
+            ws.send(Message::Text("PONG".to_owned().into()))
+                .await
+                .unwrap();
+            send_json(&mut ws, book_frame("a", "0.4", "10")).await;
+            while let Some(message) = ws.next().await {
+                if message.is_err() {
+                    break;
+                }
+            }
+        });
+
+        let settings = PolymarketSettings {
+            ws_url: format!("ws://{address}"),
+            ..PolymarketSettings::default()
+        };
+        let mut session = PolymarketSession::new(settings, ConnectOptions::default());
+        session.connect().await.unwrap();
+        session
+            .apply_subscriptions(&BTreeSet::from(["a".to_owned()]))
+            .await
+            .unwrap();
+        session.send_keepalive().await.unwrap();
+
+        let pong = tokio::time::timeout(Duration::from_secs(5), session.next_frame())
+            .await
+            .expect("waiting for PONG timed out")
+            .expect("PONG handling failed");
+        assert!(
+            pong.events.is_empty(),
+            "PONG is a control frame, not market data"
+        );
+
+        assert_eq!(
+            next_snapshot(&mut session, "a").await,
+            (400_000, 10_000_000)
+        );
         session.close().await;
         server.await.unwrap();
     }
