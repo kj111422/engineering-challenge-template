@@ -1,0 +1,1149 @@
+<html>
+  <head>
+    <style type="text/css">
+  
+  @font-face {
+    font-family: 'Open Sauce Two';
+    src:
+      url('https://cdn.app.fossa.com/assets/4.26.9/font/OpenSauceTwo-Regular.woff2') format('woff2'),
+      url('https://cdn.app.fossa.com/assets/4.26.9/font/OpenSauceTwo-Regular.woff') format('woff');
+    font-weight: normal;
+    font-style: normal;
+    font-display: swap;
+  }
+
+  @font-face {
+    font-family: 'Open Sauce Two';
+    src:
+      url('https://cdn.app.fossa.com/assets/4.26.9/font/OpenSauceTwo-Medium.woff2') format('woff2'),
+      url('https://cdn.app.fossa.com/assets/4.26.9/font/OpenSauceTwo-Medium.woff') format('woff');
+    font-weight: 500;
+    font-style: normal;
+    font-display: swap;
+  }
+
+  @font-face {
+    font-family: 'Open Sauce Two';
+    src:
+      url('https://cdn.app.fossa.com/assets/4.26.9/font/OpenSauceTwo-SemiBold.woff2') format('woff2'),
+      url('https://cdn.app.fossa.com/assets/4.26.9/font/OpenSauceTwo-SemiBold.woff') format('woff');
+    font-weight: 600;
+    font-style: normal;
+    font-display: swap;
+  }
+
+  @font-face {
+    font-family: 'Open Sauce Two';
+    src:
+      url('https://cdn.app.fossa.com/assets/4.26.9/font/OpenSauceTwo-Bold.woff2') format('woff2'),
+      url('https://cdn.app.fossa.com/assets/4.26.9/font/OpenSauceTwo-Bold.woff') format('woff');
+    font-weight: 700;
+    font-style: normal;
+    font-display: swap;
+  }
+
+  @font-face {
+    font-family: 'iA Writer Quattro';
+    src:
+      url('https://cdn.app.fossa.com/assets/4.26.9/font/iAWriterQuattroS-Regular.woff2') format('woff2'),
+      url('https://cdn.app.fossa.com/assets/4.26.9/font/iAWriterQuattroS-Regular.woff') format('woff');
+    font-weight: normal;
+    font-style: normal;
+    font-display: swap;
+  }
+</style>
+
+<style type="text/css">
+  /* CSS Variables which can be references throughout the template */
+  :root {
+    /* Gray */
+    --fossaGray02: #F5F5FA;
+    --fossaGray05: #F3F3F5;
+    --fossaGray10: #E6E7EA;
+    --fossaGray20: #CDD0D5;
+    --fossaGray40: #9BA1AB;
+    --fossaGray60: #6A7181;
+    --fossaGray80: #384257;
+    --fossaGray100: #06132D;
+    --fossaGray120: #050F24;
+
+    /* Red */
+    --fossaRed05: #FAF5F7;
+    --fossaRed10: #FDE8EB;
+    --fossaRed20: #FAD2D7;
+    --fossaRed40: #F5A5AF;
+    --fossaRed60: #F17786;
+    --fossaRed80: #EC4A5E;
+    --fossaRed100: #E71D36;
+    --fossaRed110: #D01A31;
+    --fossaRed120: #B9172B;
+
+    /* Orange */
+    --fossaOrange05: #FFF6F4;
+    --fossaOrange10: #FEEDE8;
+    --fossaOrange20: #FDDCD2;
+    --fossaOrange40: #FBB9A5;
+    --fossaOrange60: #FA9777;
+    --fossaOrange80: #F8744A;
+    --fossaOrange100: #F6511D;
+    --fossaOrange110: #DD491A;
+    --fossaOrange120: #C54117;
+
+    /* Yellow */
+    --fossaYellow05: #FCEBCC;
+    --fossaYellow10: #FDF5E5;
+    --fossaYellow20: #FCEBCC;
+    --fossaYellow40: #F8D699;
+    --fossaYellow60: #F5C266;
+    --fossaYellow80: #F1AD33;
+    --fossaYellow100: #EE9900;
+    --fossaYellow110: #D68A00;
+    --fossaYellow120: #BE7A00;
+
+    /* Green */
+    --fossaGreen05: #F4FAF8;
+    --fossaGreen10: #E9F5F0;
+    --fossaGreen20: #D4ECE2;
+    --fossaGreen40: #A9D8C5;
+    --fossaGreen60: #7EC5A7;
+    --fossaGreen80: #53B18A;
+    --fossaGreen100: #289E6D;
+    --fossaGreen110: #248E62;
+    --fossaGreen120: #207E57;
+
+    /* Blue */
+    --fossaBlue05: #F4F7FD;
+    --fossaBlue10: #E9EFFC;
+    --fossaBlue20: #D2DFF9;
+    --fossaBlue40: #A5BFF3;
+    --fossaBlue60: #79A0EC;
+    --fossaBlue80: #4C80E6;
+    --fossaBlue100: #1F60E0;
+    --fossaBlue110: #1C56CA;
+    --fossaBlue120: #194DB3;
+
+    /* Purple */
+    --fossaPurple05: #F6F4FD;
+    --fossaPurple10: #EEE9FC;
+    --fossaPurple20: #DDD4F8;
+    --fossaPurple40: #BBA9F1;
+    --fossaPurple60: #987FEB;
+    --fossaPurple80: #7654E4;
+    --fossaPurple100: #5429DD;
+    --fossaPurple110: #4C25C7;
+    --fossaPurple120: #4321B1;
+
+    /* Cyan */
+    --fossaCyan05: #F2FAFE;
+    --fossaCyan10: #E5F4FC;
+    --fossaCyan20: #CCEAF9;
+    --fossaCyan40: #99D5F3;
+    --fossaCyan60: #66C0EE;
+    --fossaCyan80: #33ABE8;
+    --fossaCyan100: #0096E2;
+    --fossaCyan110: #0087CB;
+    --fossaCyan120: #0078B5;
+
+    /* Pink */
+    --fossaPink05: #FEF4F8;
+    --fossaPink10: #FDE9F2;
+    --fossaPink20: #FBD3E5;
+    --fossaPink40: #F8A6CB;
+    --fossaPink60: #F47AB0;
+    --fossaPink80: #F14D96;
+    --fossaPink100: #ED217C;
+    --fossaPink110: #D51E70;
+    --fossaPink120: #BE1A63;
+
+    /* Primary colors */
+    --fossaGreen: #289E6D;
+    --fossaSlateBlue: #3E485B;
+    --fossaWhite: #FFF;
+    --fossaWhiteSmoke: #F4F5F6;
+    --fossaBlack: #000;
+    --fossaMidnightBlue: #06132D;
+
+    /* Secondary colors */
+    --fossaCyan: #0096E2;
+    --fossaBlue: #1F60E0;
+    --fossaPurple: #5429DD;
+    --fossaPink: #ED217C;
+    --fossaRed: #E71D36;
+    --fossaOrange: #F6511D;
+    --fossaYellow: #EE9900;
+
+    /* Font Family Variables */
+    --fossaPrimaryFont: 'Open Sauce Two', 'Open Sauce', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    --fossaMonospaceFont: 'iA Writer Quattro', 'SF Mono', 'Menlo', 'Liberation Mono', 'DejaVu Sans Mono', 'Consolas', monospace;
+
+    /* Font Weight Variables */
+    --fossaFontWeightLight: 300;
+    --fossaFontWeightNormal: 400;
+    --fossaFontWeightMedium: 500;
+    --fossaFontWeightSemibold: 600;
+    --fossaFontWeightBold: 700;
+    --fossaFontWeightExtrabold: 800;
+    --fossaFontWeightBlack: 900;
+
+    /* Font Size Variables */
+    --fossaFontSize9xl: 144px;
+    --fossaFontSize8xl: 120px;
+    --fossaFontSize7xl: 96px;
+    --fossaFontSize6xl: 76px;
+    --fossaFontSize5xl: 60px;
+    --fossaFontSize4xl: 48px;
+    --fossaFontSize3xl: 40px;
+    --fossaFontSize2xl: 32px;
+    --fossaFontSizeXl: 24px;
+    --fossaFontSizeLarge: 20px;
+    --fossaFontSizeBase: 16px;
+    --fossaFontSizeMedium: 14px;
+    --fossaFontSizeSmall: 12px;
+    --fossaFontSizeXs: 10px;
+
+    /* Line Height Variables */
+    --fossaLineHeightXs: 1em;
+    --fossaLineHeightSmall: 1.25em;
+    --fossaLineHeightMedium: 1.5em;
+    --fossaLineHeightLarge: 1.75em;
+    --fossaLineHeightXl: 2em;
+    --fossaLineHeight2Xl: 2.25em;
+
+    /* Spacing variables */
+    --fossaSpacing3xs: 2px;
+    --fossaSpacing2xs: 4px;
+    --fossaSpacingXs: 8px;
+    --fossaSpacingSmall: 12px;
+    --fossaSpacingMedium: 16px;
+    --fossaSpacingLarge: 24px;
+    --fossaSpacingXl: 32px;
+    --fossaSpacing2xl: 48px;
+    --fossaSpacing3xl: 64px;
+    --fossaSpacing4xl: 80px;
+  }
+</style>
+
+<style type="text/css">
+  @page { /* These are special styles what tells the browser if it's in "print mode" how to print */
+    size: 8.5in 11in;
+    margin: 1in; /*  This needs to be set because we set  `preferCSSPageSize: true` */
+  }
+
+  * {
+    box-sizing: border-box;
+    /* Ensures that the bg colors of the vulns badges are respected */
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--fossaWhite);
+    color: var(--fossaMidnightBlue);
+    font-family: var(--fossaPrimaryFont);
+    font-size: var(--fossaFontSizeMedium);
+    font-weight: var(--fossaFontWeightNormal);
+    line-height: 1.5;
+  }
+
+  h1, h2, h3, h4, h5 {
+    font-family: var(--fossaFontSizeBase);
+    font-weight: var(--fossaFontWeightBold);
+    margin: 0;
+    padding: 0;
+  }
+
+  @media screen {
+    .page {
+      min-height: 100vh;
+      min-width: 100vw;
+      padding: 1in;
+    }
+  }
+
+  @media print {
+    .page {
+      min-height: 11in;
+      min-width: 8.5in;
+       /* The "pages" don't need any padding when printing, because the @page is styled above with margins */
+      padding: 0;
+    }
+  }
+
+  /* Reduce the padding for the pages when the screen is smaller than 780px */
+  @media screen and (max-width: 780px) {
+    .page {
+      padding: 0.75in;
+    }
+  }
+</style>
+
+        <style type="text/css">
+      /* ==========================================================================
+         1. CSS Variables
+         ========================================================================== */
+
+      :root {
+        /* Breakpoints - NOTE: Can't be used in @media queries, kept for documentation/JS use */
+        --fossaBreakpointMd: 768px;
+
+        /* Layout */
+        --fossaBorderRadiusSmall: var(--fossaSpacing2xs); /* 4px */
+        --fossaLabelWidth: calc(var(--fossaSpacing2xl) * 4); /* 192px = 48px * 4 */
+      }
+
+      /* Override global.ejs base font-size (14px / --fossaFontSizeMedium) to match
+         the explicit 16px used in table cells and component text, so that inherited
+         body text in dependency cards is the same size as front-matter tables. */
+      body {
+        font-size: var(--fossaFontSizeBase);
+      }
+
+      /* ==========================================================================
+         2. Layout: Report Section
+         ========================================================================== */
+
+      .report-section {
+        margin-bottom: var(--fossaSpacingXl);
+        padding: var(--fossaSpacingXl) var(--fossaSpacingMedium);
+      }
+
+      @media (min-width: 640px) {
+        .report-section {
+          padding: var(--fossaSpacingXl) var(--fossaSpacingXl);
+        }
+      }
+
+      @media (min-width: 768px) {
+        .report-section {
+          padding: var(--fossaSpacingXl) var(--fossaSpacing3xl);
+        }
+      }
+
+      .report-section__content {
+        padding-top: var(--fossaSpacingMedium);
+      }
+
+      .report-section__description {
+        color: var(--fossaGray60);
+        margin-bottom: var(--fossaSpacingMedium);
+        line-height: var(--fossaLineHeightMedium);
+      }
+
+      .report-section__header {
+        font-weight: var(--fossaFontWeightBold);
+        color: var(--fossaGray80);
+        margin-bottom: var(--fossaSpacingXs);
+        font-size: var(--fossaFontSizeXl);
+      }
+
+      /* ==========================================================================
+         3. Shared UI Patterns
+         ========================================================================== */
+
+      /* Clamped text */
+      .clampable-text {
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
+
+      .clampable-text--clamped-3 {
+        -webkit-line-clamp: 3;
+      }
+
+      .clampable-text--clamped-4 {
+        -webkit-line-clamp: 4;
+      }
+
+      .clampable-text--expanded {
+        -webkit-line-clamp: unset;
+      }
+
+      /* Info row / label */
+      .info-content {
+        margin-top: var(--fossaSpacingXs);
+      }
+
+      .info-label {
+        color: var(--fossaGray40);
+        font-weight: var(--fossaFontWeightMedium);
+        margin-bottom: var(--fossaSpacing2xs);
+      }
+
+      .info-row {
+        display: flex;
+        flex-direction: column;
+        padding: var(--fossaSpacingSmall) 0;
+      }
+
+      .info-value {
+        flex: 1;
+      }
+
+      @media (min-width: 768px) {
+        .info-row {
+          flex-direction: row;
+        }
+
+        .info-label {
+          width: var(--fossaLabelWidth);
+          margin-bottom: 0;
+        }
+      }
+
+      /* Toggle button */
+      .text-toggle {
+        background: none;
+        border: none;
+        color: var(--fossaGreen);
+        cursor: pointer;
+        font-size: var(--fossaFontSizeBase);
+        margin-top: var(--fossaSpacingXs);
+        padding: 0;
+        text-align: left;
+        text-decoration: underline;
+      }
+
+      /* ==========================================================================
+         4. Components
+         ========================================================================== */
+
+      /* Back to Summary Button */
+      .back-to-summary-button {
+        align-items: center;
+        background-color: var(--fossaWhite);
+        border: 1px solid var(--fossaGray20);
+        border-radius: var(--fossaBorderRadiusSmall);
+        bottom: var(--fossaSpacingXl);
+        box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+        color: var(--fossaGray80);
+        cursor: pointer;
+        display: flex;
+        font-size: var(--fossaFontSizeMedium);
+        font-weight: var(--fossaFontWeightMedium);
+        gap: var(--fossaSpacingXs);
+        opacity: 0;
+        padding: var(--fossaSpacingXs) var(--fossaSpacingMedium);
+        position: fixed;
+        right: var(--fossaSpacingXl);
+        transition: opacity 0.2s ease-in-out, visibility 0.2s ease-in-out, background-color 0.2s ease-in-out;
+        visibility: hidden;
+        z-index: 50;
+      }
+
+      .back-to-summary-button.visible {
+        opacity: 1;
+        visibility: visible;
+      }
+
+      .back-to-summary-button:hover {
+        background-color: var(--fossaGray02);
+      }
+
+      .back-to-summary-button__icon {
+        flex-shrink: 0;
+        height: 1rem;
+        width: 1rem;
+      }
+
+      /* Collapsible Section */
+      .collapsible-chevron {
+        color: var(--fossaGray40);
+        flex-shrink: 0;
+        transition: transform 0.2s ease;
+      }
+
+      .collapsible-content {
+        margin-top: var(--fossaSpacingXs);
+        overflow: hidden;
+        transition: max-height 0.3s ease;
+      }
+
+      .collapsible-section {
+        padding: var(--fossaSpacingSmall) 0 var(--fossaSpacingXs) var(--fossaSpacingMedium);
+      }
+
+      .collapsible-section.expanded .collapsible-chevron {
+        transform: rotate(0deg);
+      }
+
+      .collapsible-section.expanded .collapsible-content {
+        max-height: none;
+      }
+
+      .collapsible-section:not(.expanded) .collapsible-chevron {
+        transform: rotate(-90deg);
+      }
+
+      .collapsible-section:not(.expanded) .collapsible-content {
+        max-height: 0;
+        margin-top: 0;
+      }
+
+      .collapsible-title {
+        color: var(--fossaGray80);
+        font-size: var(--fossaFontSizeBase);
+        font-weight: var(--fossaFontWeightBold);
+      }
+
+      .collapsible-toggle {
+        align-items: center;
+        background: none;
+        border: none;
+        border-bottom: 1px solid var(--fossaGray20);
+        cursor: pointer;
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: var(--fossaSpacingXs);
+        padding-bottom: var(--fossaSpacingXs);
+        text-align: left;
+        width: 100%;
+      }
+
+      /* Dependency Card */
+      .dependency-card {
+        margin-bottom: var(--fossaSpacingXl);
+      }
+
+      .dependency-card__badge {
+        align-self: flex-start;
+        background-color: var(--fossaGray02);
+        border: 1px solid var(--fossaGray20);
+        border-radius: var(--fossaBorderRadiusSmall);
+        color: var(--fossaGray80);
+        font-size: var(--fossaFontSizeMedium);
+        padding: var(--fossaSpacing2xs) var(--fossaSpacingXs);
+      }
+
+      @media (min-width: 768px) {
+        .dependency-card__badge {
+          align-self: auto;
+        }
+      }
+
+      .dependency-card__header {
+        align-items: flex-start;
+        border-bottom: 1px solid var(--fossaGray20);
+        display: flex;
+        flex-direction: column;
+        gap: var(--fossaSpacingXs);
+        justify-content: space-between;
+        margin-bottom: var(--fossaSpacingXs);
+        padding-bottom: var(--fossaSpacingXs);
+      }
+
+      @media (min-width: 768px) {
+        .dependency-card__header {
+          flex-direction: row;
+          align-items: center;
+        }
+      }
+
+      .dependency-card__locator {
+        color: var(--fossaGray40);
+        font-size: var(--fossaFontSizeMedium);
+      }
+
+      .dependency-card__metadata {
+        align-items: flex-start;
+        display: flex;
+        flex-direction: column;
+        gap: var(--fossaSpacingXs);
+      }
+
+      @media (min-width: 768px) {
+        .dependency-card__metadata {
+          flex-direction: row;
+          align-items: center;
+        }
+      }
+
+      .dependency-card__name {
+        color: var(--fossaGray80);
+        font-size: var(--fossaFontSizeBase);
+        font-weight: var(--fossaFontWeightBold);
+      }
+
+      .dependency-card__name-container {
+        align-items: baseline;
+        display: flex;
+        gap: var(--fossaSpacingXs);
+      }
+
+      .dependency-card__sections {
+        display: flex;
+        flex-direction: column;
+      }
+
+      .dependency-card__separator {
+        background-color: var(--fossaGray60);
+        border-radius: 50%;
+        display: none;
+        height: var(--fossaSpacing2xs);
+        width: var(--fossaSpacing2xs);
+      }
+
+      @media (min-width: 768px) {
+        .dependency-card__separator {
+          display: block;
+        }
+      }
+
+      .dependency-card__version {
+        color: var(--fossaGray40);
+        font-size: var(--fossaFontSizeBase);
+        margin-left: var(--fossaSpacing2xs);
+      }
+
+      .dependency-description-content {
+        color: var(--fossaGray80);
+        line-height: var(--fossaLineHeightMedium);
+        margin-top: var(--fossaSpacingXs);
+      }
+
+      @media (min-width: 768px) {
+        .dependency-description-content {
+          margin-left: var(--fossaLabelWidth);
+        }
+      }
+
+      /* License Section */
+      .license-copyright {
+        color: var(--fossaGray80);
+        margin-bottom: var(--fossaSpacing2xs);
+      }
+
+      .license-copyright:last-child {
+        margin-bottom: 0;
+      }
+
+      .license-divider {
+        border-top: 1px solid var(--fossaGray20);
+        margin-bottom: var(--fossaSpacingMedium);
+      }
+
+      .license-group {
+        margin-bottom: var(--fossaSpacingLarge);
+      }
+
+      .license-group:last-child {
+        margin-bottom: 0;
+      }
+
+      .license-nested {
+        margin-left: var(--fossaSpacingXl);
+      }
+
+      .license-nested .license-signature {
+        margin-bottom: var(--fossaSpacingXs);
+      }
+
+      .license-signature {
+        color: var(--fossaGray80);
+        font-weight: var(--fossaFontWeightSemibold);
+        margin-bottom: var(--fossaSpacingXs);
+        padding-bottom: var(--fossaSpacingXs);
+      }
+
+      .license-text {
+        color: var(--fossaGray80);
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      .license-value {
+        display: flex;
+        flex: 1;
+        flex-direction: column;
+      }
+
+      /* Licenses by Project Table */
+      .licenses-by-project__table {
+        border-collapse: collapse;
+        margin-top: var(--fossaSpacingMedium);
+        width: 100%;
+      }
+
+      .licenses-by-project__table-header {
+        border-bottom: 2px solid var(--fossaGray20);
+      }
+
+      .licenses-by-project__table-header th {
+        color: var(--fossaGray40);
+        font-size: var(--fossaFontSizeBase);
+        font-weight: var(--fossaFontWeightMedium);
+        padding: var(--fossaSpacingSmall);
+        text-align: left;
+      }
+
+      .licenses-by-project__table-header th:nth-child(1) {
+        width: 30%;
+      }
+
+      .licenses-by-project__table-header th:nth-child(2) {
+        width: 25%;
+      }
+
+      .licenses-by-project__table-header th:nth-child(3) {
+        width: 45%;
+      }
+
+      .licenses-by-project__table-row {
+        border-bottom: 1px solid var(--fossaGray10);
+      }
+
+      .licenses-by-project__table-row td {
+        color: var(--fossaGray80);
+        font-size: var(--fossaFontSizeBase);
+        padding: var(--fossaSpacingSmall);
+        vertical-align: top;
+      }
+
+      .licenses-by-project__table-row td:nth-child(1) {
+        width: 30%;
+      }
+
+      .licenses-by-project__table-row td:nth-child(2) {
+        width: 25%;
+      }
+
+      .licenses-by-project__table-row td:nth-child(3) {
+        width: 45%;
+      }
+
+      .licenses-by-project__table-row:last-child {
+        border-bottom: none;
+      }
+
+      .licenses-by-project__version {
+        color: var(--fossaGray60);
+        word-break: break-word;
+      }
+
+      /* Package Info Section */
+      .package-info-authors {
+        display: flex;
+        flex: 1;
+        flex-direction: column;
+      }
+
+      .package-info-authors__text {
+        color: var(--fossaGray80);
+      }
+
+      .package-info-value {
+        color: var(--fossaGray80);
+        flex: 1;
+      }
+
+      .package-info-value--link {
+        color: var(--fossaBlue);
+        text-decoration: underline;
+        word-break: break-all;
+      }
+
+      /* Summary Table */
+      .table-container {
+        overflow-x: auto;
+      }
+
+      .summary-table {
+        border-collapse: collapse;
+        width: 100%;
+      }
+
+      .summary-table__cell {
+        color: var(--fossaGray80);
+        font-size: var(--fossaFontSizeBase);
+        padding: var(--fossaSpacingSmall) var(--fossaSpacingMedium);
+      }
+
+      .summary-table__header {
+        border-bottom: 1px solid var(--fossaGray20);
+        color: var(--fossaGray80);
+        font-size: var(--fossaFontSizeBase);
+        font-weight: var(--fossaFontWeightSemibold);
+        padding: var(--fossaSpacingSmall) var(--fossaSpacingMedium);
+        text-align: left;
+      }
+
+      .summary-table__link {
+        color: var(--fossaGreen);
+        text-align: left;
+        text-decoration: underline;
+      }
+
+      .summary-table__link:hover {
+        color: var(--fossaGreenDark);
+      }
+
+      .summary-table__package-name {
+        font-weight: var(--fossaFontWeightSemibold);
+      }
+
+      .summary-table__package-version {
+        font-weight: var(--fossaFontWeightNormal);
+      }
+
+      .summary-table__row {
+        border-bottom: 1px solid var(--fossaGray20);
+      }
+
+      .summary-table__row:last-child {
+        border-bottom: none;
+      }
+
+      /* Title Card */
+      .title-card {
+        background-color: var(--fossaWhiteSmoke);
+        border-radius: 0;
+        margin-top: 0;
+      }
+
+      .title-card__custom-text {
+        color: var(--fossaGray80);
+        line-height: var(--fossaLineHeightMedium);
+        margin-bottom: var(--fossaSpacingLarge);
+      }
+
+      .title-card__description {
+        color: var(--fossaGray60);
+        line-height: var(--fossaLineHeightMedium);
+        margin-bottom: var(--fossaSpacingLarge);
+      }
+
+      .title-card__description p {
+        margin: 0;
+      }
+
+      .title-card__description p + p {
+        margin-top: var(--fossaSpacingXs);
+      }
+
+      .title-card__header {
+        align-items: flex-start;
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: var(--fossaSpacingLarge);
+      }
+
+      .title-card__logo-container {
+        align-items: flex-end;
+        display: flex;
+        flex-direction: column;
+        gap: var(--fossaSpacingXs);
+      }
+
+      .title-card__metadata {
+        align-items: flex-start;
+        display: flex;
+        font-size: var(--fossaFontSizeMedium);
+        gap: 200px;
+      }
+
+      .title-card__metadata-item {
+        display: flex;
+        flex-direction: column;
+      }
+
+      .title-card__metadata-label {
+        color: var(--fossaGray60);
+        font-weight: var(--fossaFontWeightSemibold);
+      }
+
+      .title-card__metadata-value {
+        color: var(--fossaGray80);
+      }
+
+      .title-card__org-logo {
+        max-height: 100%;
+        max-width: 100%;
+        object-fit: contain;
+      }
+
+      .title-card__org-logo-frame {
+        align-items: center;
+        background-color: white;
+        border: 1px solid var(--fossaGray20);
+        border-radius: 2px;
+        display: flex;
+        height: 50px;
+        justify-content: center;
+        padding: var(--fossaSpacingXs);
+        width: 100px;
+      }
+
+      .title-card__powered-by {
+        align-items: center;
+        color: var(--fossaGray40);
+        display: flex;
+        font-size: var(--fossaFontSizeSmall);
+        gap: 0.25rem;
+      }
+
+      .title-card__powered-by svg {
+        display: inline-block;
+        vertical-align: middle;
+      }
+
+      .title-card__project-name {
+        color: var(--fossaGray60);
+        font-size: var(--fossaFontSizeMedium);
+      }
+
+      .title-card__title {
+        color: var(--fossaGray80);
+        font-size: var(--fossaFontSize2xl);
+        font-weight: var(--fossaFontWeightBold);
+        margin-bottom: var(--fossaSpacingMedium);
+      }
+
+      .title-card__title-highlight {
+        color: var(--fossaGreen);
+      }
+
+      /* ==========================================================================
+         5. Page & Print Overrides
+         ========================================================================== */
+
+      /* Override @page from global.ejs — CSS @page margins take precedence over
+         Puppeteer's margin option, so we control margins here.
+         size:auto prevents a mismatch between the CSS page size (Letter in
+         global.ejs) and Puppeteer's format (A4). */
+      @page {
+        size: auto;
+        margin: 1in 0;
+      }
+
+      /* PDF / Print overrides */
+      @media print {
+        /* Step all font sizes down one notch for denser PDF output */
+        :root {
+          --fossaFontSize2xl: 24px;  /* was 32px */
+          --fossaFontSizeXl: 20px;   /* was 24px */
+          --fossaFontSizeLarge: 16px; /* was 20px */
+          --fossaFontSizeBase: 14px;  /* was 16px */
+          --fossaFontSizeMedium: 12px; /* was 14px */
+          --fossaFontSizeSmall: 10px;  /* was 12px */
+        }
+
+        /* Content sections get side padding matching the title card */
+        .report-section,
+        .dependency-card {
+          padding-left: var(--fossaSpacing3xl);
+          padding-right: var(--fossaSpacing3xl);
+        }
+
+        /* Prevent table headers from repeating on every printed page */
+        thead {
+          display: table-row-group;
+        }
+
+        /* Force all collapsible sections open */
+        .collapsible-section .collapsible-content {
+          max-height: none !important;
+          overflow: visible !important;
+          margin-top: var(--fossaSpacingXs) !important;
+        }
+
+        /* Hide chevron icons */
+        .collapsible-chevron {
+          display: none !important;
+        }
+
+        /* Force all clamped text to be fully expanded */
+        .clampable-text {
+          -webkit-line-clamp: unset !important;
+          -webkit-box-orient: unset !important;
+          display: block !important;
+          overflow: visible !important;
+        }
+
+        /* Hide "Read more" / "Show less" toggle buttons */
+        .text-toggle {
+          display: none !important;
+        }
+
+      }
+    </style>
+    <script>
+      function toggleCollapse(button, sectionId) {
+        const section = button.closest('.collapsible-section');
+
+        if (section.classList.contains('expanded')) {
+          section.classList.remove('expanded');
+        } else {
+          section.classList.add('expanded');
+        }
+      }
+
+      function toggleReadMore(elementId, button) {
+        const element = document.getElementById(elementId);
+        if (!element) return;
+
+        const isClamped = element.classList.contains('clampable-text--clamped-4');
+
+        if (isClamped) {
+          element.classList.remove('clampable-text--clamped-4');
+          element.classList.add('clampable-text--expanded');
+          button.textContent = 'Show less';
+        } else {
+          element.classList.remove('clampable-text--expanded');
+          element.classList.add('clampable-text--clamped-4');
+          button.textContent = 'Read more';
+        }
+      }
+
+      function toggleLicenseText(elementId, button) {
+        const element = document.getElementById(elementId);
+        if (!element) return;
+
+        const isClamped = element.classList.contains('clampable-text--clamped-3');
+
+        if (isClamped) {
+          element.classList.remove('clampable-text--clamped-3');
+          element.classList.add('clampable-text--expanded');
+          button.textContent = 'Show less';
+        } else {
+          element.classList.remove('clampable-text--expanded');
+          element.classList.add('clampable-text--clamped-3');
+          button.textContent = 'Read more';
+        }
+      }
+
+      // Handle back to summary button visibility on scroll
+      function handleBackToSummaryButton() {
+        const button = document.getElementById('back-to-summary-button');
+        const detailsSection = document.getElementById('dependencies-details');
+
+        if (!button || !detailsSection) return;
+
+        const detailsRect = detailsSection.getBoundingClientRect();
+        // Show button when the details section header is scrolled past (above the viewport)
+        if (detailsRect.top < 0) {
+          button.classList.add('visible');
+        } else {
+          button.classList.remove('visible');
+        }
+      }
+
+      // Initialize scroll handler when DOM is ready
+      document.addEventListener('DOMContentLoaded', function() {
+        window.addEventListener('scroll', handleBackToSummaryButton);
+        handleBackToSummaryButton(); // Check initial state
+      });
+    </script>
+
+  </head>
+  <body>
+  
+<section class="report-section title-card">
+  <div class="title-card__header">
+    <div class="title-card__project-name">engineering-challenge-template</div>
+    <div class="title-card__logo-container">
+      
+      <div class="title-card__powered-by">
+        <span>Created with</span>
+        <svg xmlns="http://www.w3.org/2000/svg" width="17" height="16" viewBox="0 0 17 16" fill="none">
+          <path d="M5.64855 2.52666L9.4906 0.799356C10.0395 0.55721 10.6852 0.799356 10.9273 1.34822L14.8178 9.96861C15.06 10.5175 14.8178 11.1632 14.269 11.4053L5.64855 15.2958C5.09968 15.538 4.45396 15.2958 4.21181 14.747L0.321329 6.12656C0.0791826 5.5777 0.321329 4.93198 0.870194 4.68983L1.67735 4.33469L1.74192 4.3024L1.75806 4.30778L1.77421 4.28626" stroke="#707072" stroke-width="0.423755"/>
+          <path fill-rule="evenodd" clip-rule="evenodd" d="M0.0308195 5.54529C0.0146764 5.77129 0.0469625 5.9973 0.143821 6.20716L4.01816 14.8275C4.13116 15.0858 4.32488 15.2957 4.56702 15.4248C4.77689 11.8895 7.52121 9.80706 11.2825 9.80706C11.7184 9.80706 12.3803 9.83934 13.2359 9.96849C13.4619 10.0008 13.704 9.96849 13.8977 9.83934C14.2044 9.61334 14.4789 9.38734 14.7049 9.14519C15.1569 8.6609 15.5282 8.09589 15.7219 7.19188C15.7219 7.19188 16.1416 7.11117 15.9963 5.86815C15.9802 5.69058 15.8672 5.52915 15.7219 5.51301C15.6573 5.49686 15.5927 5.49686 15.5443 5.49686C15.4636 5.49686 15.3829 5.49686 15.3183 5.51301C14.156 5.31929 13.0744 4.81885 12.6063 4.28613C12.5901 4.26999 12.574 4.2377 12.5417 4.22156C12.4933 4.15699 12.4448 4.10856 12.3803 4.04399C12.348 4.0117 12.3157 3.97941 12.2673 3.94713C11.3148 3.22069 10.1525 2.78483 8.89337 2.78483C7.08534 2.78483 6.45576 2.78483 6.11676 2.44582C6.03604 2.34897 5.93919 2.26825 5.84233 2.18754C5.40646 1.84853 4.8576 1.63867 4.27645 1.63867C2.93657 1.63867 1.8227 2.68797 1.67741 4.06013C1.66127 4.17313 1.66127 4.26999 1.66127 4.38299C1.66127 4.62514 1.7097 4.88343 1.79042 5.15786L0.0308195 5.54529ZM2.08637 5.11481C3.24867 4.93724 4.59931 4.85114 6.34276 4.81885C5.81004 4.47985 5.63247 3.88256 5.47104 3.30141C5.29521 2.68601 5.11938 2.22134 4.53314 1.99591C4.40806 1.94781 4.27278 1.93071 4.13893 1.93712C2.79575 2.00139 2.03794 3.02333 2.03794 4.59285C2.03794 4.77042 2.05409 4.92109 2.08637 5.11481ZM15.7596 5.98654C15.8564 6.90669 15.5497 6.99278 15.5497 6.99278C15.4367 6.99278 15.0869 6.57307 14.6834 6.20178C14.6349 6.16949 14.6564 6.08877 14.7049 6.05649L14.9847 5.85739C15.1368 5.7636 15.2107 5.7121 15.4206 5.7121C15.4528 5.7121 15.5013 5.7121 15.5497 5.72825C15.6466 5.74439 15.7434 5.84125 15.7596 5.98654ZM11.4601 5.59372C11.7184 5.57758 11.9121 5.4 11.9121 5.174C11.9283 4.91571 11.6861 4.722 11.3955 4.73814C11.1534 4.75428 11.1373 4.75428 10.3785 4.93185C10.3301 4.948 10.314 4.99643 10.3624 5.02871C11.1857 5.60986 11.2018 5.60986 11.4601 5.59372Z" fill="#707072"/>
+        </svg>
+        <svg xmlns="http://www.w3.org/2000/svg" width="26" height="6" viewBox="0 0 26 6" fill="none">
+          <path d="M2.95429 3.31096H1.07994V5.32841C1.07994 5.36312 1.06616 5.39641 1.04163 5.42096C1.0171 5.4455 0.98383 5.45929 0.949139 5.45929H0.130806C0.0961139 5.45929 0.0628429 5.4455 0.0383121 5.42096C0.0137813 5.39641 0 5.36312 0 5.32841V0.220948C0.000832829 0.186793 0.0149809 0.154318 0.039422 0.13046C0.0638632 0.106602 0.0966596 0.0932516 0.130806 0.0932617H3.51421C3.5489 0.0932617 3.58217 0.107051 3.6067 0.131595C3.63123 0.15614 3.64501 0.189429 3.64501 0.224141V0.959934C3.64501 0.994646 3.63123 1.02794 3.6067 1.05248C3.58217 1.07702 3.5489 1.09081 3.51421 1.09081H1.07994V2.3166H2.95429C2.98899 2.3166 3.02226 2.33039 3.04679 2.35494C3.07132 2.37948 3.0851 2.41277 3.0851 2.44748V3.18328C3.08427 3.21743 3.07012 3.24991 3.04568 3.27377C3.02124 3.29762 2.98844 3.31097 2.95429 3.31096Z" fill="#707072"/>
+          <path d="M7.22709 0.000331805C7.58642 -0.00494514 7.94354 0.0573162 8.27991 0.183881C8.56279 0.287163 8.82207 0.446186 9.04242 0.651534C9.236 0.844364 9.39755 1.06689 9.52097 1.31072C9.64416 1.5426 9.73538 1.79012 9.79216 2.04651C9.84281 2.28311 9.86847 2.52438 9.86872 2.76634C9.8686 3.01201 9.84294 3.25699 9.79216 3.49735C9.73581 3.75488 9.64457 4.00351 9.52097 4.23633C9.3976 4.48018 9.23604 4.70272 9.04242 4.89552C8.82247 5.10024 8.56298 5.25776 8.27991 5.35838C7.94297 5.48249 7.58611 5.54363 7.22709 5.53874C6.86543 5.5441 6.50587 5.48297 6.16629 5.35838C5.8832 5.2578 5.6237 5.10028 5.40378 4.89552C5.20709 4.70277 5.04184 4.48034 4.91406 4.23633C4.78787 4.00419 4.69496 3.75542 4.63809 3.49735C4.58728 3.257 4.56162 3.01201 4.56152 2.76634C4.56174 2.52438 4.5874 2.2831 4.63809 2.04651C4.69539 1.78958 4.78828 1.54193 4.91406 1.31072C5.04237 1.06663 5.20816 0.8442 5.40538 0.651534C5.6257 0.446151 5.88499 0.287124 6.16788 0.183881C6.50641 0.0571146 6.86567 -0.00514028 7.22709 0.000331805ZM7.22709 4.5364C7.45924 4.53968 7.68904 4.48944 7.89866 4.38956C8.0736 4.30939 8.22799 4.1904 8.3501 4.04161C8.46094 3.89934 8.54967 3.74114 8.61331 3.57236C8.67178 3.42487 8.7156 3.27197 8.74411 3.11588C8.76345 2.99928 8.77358 2.88134 8.77442 2.76315C8.77357 2.64496 8.76344 2.52702 8.74411 2.41042C8.71577 2.25584 8.67195 2.10452 8.61331 1.95873C8.55068 1.79324 8.46415 1.63784 8.35648 1.49746C8.23301 1.34821 8.07618 1.23011 7.89866 1.1527C7.68762 1.05839 7.45814 1.01258 7.22709 1.01863C6.98968 1.01407 6.75424 1.0626 6.53797 1.16068C6.36227 1.23597 6.20659 1.3513 6.08334 1.49746C5.97583 1.63937 5.88883 1.79572 5.82491 1.96192C5.7639 2.10688 5.72001 2.25847 5.69411 2.41361C5.65833 2.6474 5.65833 2.88528 5.69411 3.11908C5.72034 3.27466 5.76423 3.42674 5.82491 3.57236C5.88878 3.73989 5.97634 3.89738 6.08493 4.04002C6.20817 4.18963 6.36431 4.30871 6.54116 4.38796C6.75603 4.48688 6.99062 4.53547 7.22709 4.53001V4.5364Z" fill="#707072"/>
+          <path d="M11.9773 1.51645C11.9795 1.59825 12.0043 1.67783 12.0491 1.74629C12.1121 1.82726 12.1936 1.89186 12.2868 1.93462C12.3985 1.99315 12.4931 2.03784 12.5708 2.06869C12.6484 2.09955 12.7787 2.14531 12.9616 2.20596L13.3365 2.33684C13.4077 2.36237 13.5263 2.40972 13.6922 2.47889C13.8199 2.52855 13.9427 2.58999 14.0591 2.66244C14.1378 2.71564 14.2361 2.78959 14.3542 2.88429C14.4574 2.96271 14.5446 3.06024 14.611 3.17159C14.675 3.28381 14.7254 3.40331 14.761 3.52751C14.7996 3.67367 14.8136 3.82525 14.8024 3.97601C14.7919 4.19127 14.7343 4.40159 14.6337 4.59216C14.5331 4.78272 14.392 4.94887 14.2202 5.07891C13.8275 5.3807 13.3415 5.53543 12.8467 5.51623C12.1643 5.51657 11.4918 5.35232 10.8862 5.03741C10.8712 5.02979 10.858 5.01899 10.8475 5.00577C10.837 4.99254 10.8296 4.9772 10.8256 4.9608C10.813 4.92902 10.813 4.89362 10.8256 4.86184L11.1782 4.19468C11.1853 4.17896 11.1954 4.16481 11.208 4.15303C11.2206 4.14125 11.2354 4.13208 11.2515 4.12604C11.2671 4.11919 11.284 4.11564 11.301 4.11564C11.318 4.11564 11.3349 4.11919 11.3504 4.12604C11.7958 4.35582 12.2855 4.4865 12.7861 4.5091C12.9912 4.51682 13.1946 4.46883 13.3747 4.37024C13.4448 4.33301 13.5055 4.28032 13.5522 4.21617C13.5989 4.15202 13.6304 4.07808 13.6443 3.99995C13.6612 3.91659 13.6527 3.8301 13.62 3.75159C13.5873 3.67309 13.5319 3.60616 13.4609 3.55944C13.2554 3.42108 13.0285 3.31755 12.7893 3.25299C12.4108 3.15029 12.0419 3.01464 11.687 2.84758C11.1553 2.56135 10.8894 2.13573 10.8894 1.57072C10.8791 1.35684 10.9168 1.14336 10.9996 0.945907C11.0824 0.748455 11.2083 0.572023 11.368 0.429518C11.7197 0.138119 12.1672 -0.0120603 12.6234 0.00815202C13.2612 0.0232728 13.8888 0.171694 14.4658 0.443882C14.4827 0.449735 14.4981 0.459351 14.5107 0.472005C14.5234 0.484658 14.533 0.500019 14.5388 0.516927C14.5446 0.533835 14.5466 0.551849 14.5444 0.56961C14.5423 0.58737 14.5361 0.604413 14.5265 0.619452L14.2425 1.28661C14.2366 1.30357 14.2272 1.31911 14.2149 1.33227C14.2027 1.34543 14.1879 1.35594 14.1714 1.36312C14.155 1.37031 14.1372 1.37403 14.1193 1.37405C14.1013 1.37407 14.0835 1.37038 14.067 1.36323C13.6385 1.1641 13.1764 1.04716 12.7048 1.01847C12.2358 1.01847 11.9933 1.18446 11.9773 1.51645Z" fill="#707072"/>
+          <path d="M16.8938 1.51648C16.8973 1.59874 16.9238 1.67836 16.9703 1.74631C17.0333 1.82729 17.1148 1.89189 17.208 1.93465C17.3197 1.99317 17.4143 2.03786 17.492 2.06872C17.5696 2.09958 17.6999 2.14533 17.8828 2.20598L18.2576 2.33686C18.3289 2.3624 18.4475 2.40975 18.6134 2.47891C18.7411 2.5285 18.864 2.58995 18.9803 2.66246C19.059 2.71566 19.1573 2.78962 19.2754 2.88432C19.3786 2.9627 19.4658 3.06024 19.5322 3.17161C19.5917 3.28447 19.6378 3.40393 19.6694 3.52754C19.7081 3.67368 19.7221 3.82527 19.7109 3.97604C19.7003 4.19129 19.6428 4.40162 19.5422 4.59218C19.4415 4.78274 19.3004 4.9489 19.1286 5.07893C18.7367 5.38001 18.2521 5.5347 17.7583 5.51626C17.0759 5.51659 16.4034 5.35235 15.7979 5.03743C15.7828 5.02981 15.7696 5.01902 15.7591 5.00579C15.7487 4.99256 15.7412 4.97722 15.7372 4.96082C15.7246 4.92904 15.7246 4.89364 15.7372 4.86186L16.0898 4.1947C16.0976 4.17927 16.1084 4.16555 16.1215 4.15431C16.1347 4.14308 16.1499 4.13457 16.1663 4.12926C16.1819 4.1224 16.1988 4.11886 16.2158 4.11886C16.2328 4.11886 16.2497 4.1224 16.2652 4.12926C16.7106 4.35904 17.2004 4.48971 17.7009 4.51232C17.9048 4.51994 18.1071 4.47253 18.2864 4.37506C18.3573 4.33752 18.4186 4.28418 18.4656 4.21914C18.5127 4.1541 18.5441 4.07912 18.5575 3.99998C18.5742 3.91662 18.5656 3.8302 18.5329 3.75174C18.5002 3.67328 18.445 3.60634 18.3741 3.55946C18.1695 3.42147 17.9437 3.31795 17.7057 3.25301C17.3272 3.15031 16.9583 3.01466 16.6034 2.84761C16.0717 2.56138 15.8058 2.13576 15.8058 1.57074C15.7956 1.35686 15.8332 1.14339 15.916 0.945933C15.9988 0.748481 16.1247 0.572048 16.2844 0.429543C16.6361 0.138009 17.0836 -0.0121884 17.5398 0.00817779C18.1792 0.0225854 18.8085 0.171024 19.387 0.443908C19.4039 0.449761 19.4193 0.459377 19.4319 0.47203C19.4446 0.484684 19.4542 0.500044 19.46 0.516953C19.4658 0.533861 19.4678 0.551875 19.4656 0.569635C19.4635 0.587396 19.4573 0.604438 19.4477 0.619477L19.1637 1.28664C19.1577 1.30359 19.1484 1.31913 19.1361 1.3323C19.1239 1.34546 19.1091 1.35596 19.0926 1.36315C19.0762 1.37034 19.0584 1.37406 19.0404 1.37407C19.0225 1.37409 19.0047 1.37041 18.9882 1.36325C18.5582 1.16355 18.0944 1.0466 17.6212 1.0185C17.1511 1.0185 16.9086 1.18449 16.8938 1.51648Z" fill="#707072"/>
+          <path d="M23.1041 0.0947323L25.4618 5.32988C25.4681 5.34335 25.4715 5.35807 25.4715 5.37298C25.4715 5.38788 25.4681 5.4026 25.4618 5.41607C25.4555 5.42932 25.4456 5.44046 25.4331 5.44812C25.4206 5.45578 25.4062 5.45962 25.3916 5.45917H24.4345C24.3947 5.46327 24.3549 5.45318 24.3219 5.43069C24.2889 5.40819 24.2649 5.37475 24.2542 5.33627L23.7916 4.20305H22.115L21.6572 5.32988C21.6449 5.36769 21.6203 5.4003 21.5874 5.42256C21.5544 5.44482 21.515 5.45545 21.4754 5.45278H20.5039C20.4893 5.45323 20.4748 5.4494 20.4624 5.44174C20.4499 5.43408 20.4399 5.42294 20.4337 5.40969C20.4261 5.3965 20.4215 5.38182 20.4201 5.36667C20.4187 5.35151 20.4207 5.33624 20.4257 5.3219L22.7691 0.0931363C22.7888 0.0704927 22.8134 0.0525728 22.841 0.0406954C22.8687 0.0288181 22.8986 0.0232855 22.9286 0.0245048C22.9614 0.0203313 22.9947 0.024589 23.0254 0.0368764C23.0561 0.0491637 23.0832 0.0690754 23.1041 0.0947323ZM22.9445 2.13931L22.466 3.34276H23.4231L22.9445 2.13931Z" fill="#707072"/>
+        </svg>
+      </div>
+    </div>
+  </div>
+
+  <h1 class="title-card__title">
+    3rd-Party Software Report for
+    <span class="title-card__title-highlight">engineering-challenge-template</span>
+  </h1>
+
+  
+  <div class="title-card__description">
+    <p>
+      This document lists the open source software and other third-party
+      components used in engineering-challenge-template.
+    </p>
+    <p>
+      Any information contained in this report is subject to the terms of your FOSSA
+      agreement and any applicable export control laws.
+    </p>
+  </div>
+
+  <div class="title-card__metadata">
+    <div class="title-card__metadata-item">
+      <span class="title-card__metadata-label">Generated</span>
+      <span class="title-card__metadata-value">October 26, 2026</span>
+    </div>
+    <div class="title-card__metadata-item">
+      <span class="title-card__metadata-label">Revision</span>
+      <span class="title-card__metadata-value">9ab6cd5a584fea58c0086efa50d55c796e9aac4e</span>
+    </div>
+  </div>
+</section>
+
+
+<section id="dependencies-summary" class="report-section">
+  <h2 class="report-section__header">
+    Dependencies Summary
+  </h2>
+  <p class="report-section__description">
+    This section shows the summary of all packages in engineering-challenge-template.
+  </p>
+  <div class="report-section__content">
+    <div class="table-container">
+      <table class="summary-table">
+        <thead>
+          <tr>
+            <th class="summary-table__header">Package</th>
+              <th class="summary-table__header">Declared License(s)</th>
+              <th class="summary-table__header">Discovered License(s)</th>
+          </tr>
+        </thead>
+        <tbody>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+<div id="dependencies-details" class="report-section">
+  <h2 class="report-section__header">
+    Dependencies Details
+  </h2>
+  <p class="report-section__description">
+    This section shows the details for each package in engineering-challenge-template.
+  </p>
+  <div class="report-section__content">  </div>
+</div>
+    <a
+      href="#dependencies-summary"
+      id="back-to-summary-button"
+      class="back-to-summary-button"
+      aria-label="Back to Dependencies Summary"
+    >
+      <svg
+        class="back-to-summary-button__icon"
+        fill="none"
+        stroke="currentColor"
+        viewBox="0 0 24 24"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          d="M5 10l7-7m0 0l7 7m-7-7v18"
+        ></path>
+      </svg>
+      Back to Dependencies Summary
+    </a>
+  </body>
+</html>

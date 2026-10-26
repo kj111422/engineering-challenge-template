@@ -385,6 +385,55 @@ impl MetricsRegistry {
             },
         );
 
+        // Continuity state checks
+        let unseeded_ok = coverage.unseeded_symbols == 0;
+        checks.insert(
+            "unseeded".to_owned(),
+            ReadinessCheck {
+                ok: unseeded_ok,
+                detail: format!(
+                    "{} symbols have no anchoring snapshot",
+                    coverage.unseeded_symbols
+                ),
+            },
+        );
+
+        let resyncing_ok = coverage.resyncing_symbols == 0;
+        checks.insert(
+            "resyncing".to_owned(),
+            ReadinessCheck {
+                ok: resyncing_ok,
+                detail: format!(
+                    "{} symbols in resyncing state (gap recovery pending)",
+                    coverage.resyncing_symbols
+                ),
+            },
+        );
+
+        let stale_detail_ok = coverage.stale_symbols_detail == 0;
+        checks.insert(
+            "stale_detail".to_owned(),
+            ReadinessCheck {
+                ok: stale_detail_ok,
+                detail: format!(
+                    "{} symbols exceeded freshness window but not yet resyncing",
+                    coverage.stale_symbols_detail
+                ),
+            },
+        );
+
+        let terminal_ok = coverage.terminal_symbols == 0;
+        checks.insert(
+            "terminal".to_owned(),
+            ReadinessCheck {
+                ok: terminal_ok,
+                detail: format!(
+                    "{} symbols marked terminal (venue lifecycle)",
+                    coverage.terminal_symbols
+                ),
+            },
+        );
+
         let last_refresh = snapshot
             .catalog
             .last_discovery_finished_at_us

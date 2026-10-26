@@ -14,7 +14,7 @@ use tracing::{error, warn};
 
 use crate::{
     Side,
-    config::Settings,
+    config::{ExchangeKind, Settings},
     fixed::SCALE,
     metrics::CollectorStats,
     model::{
@@ -40,6 +40,9 @@ pub struct CoreConfig {
     pub probe_interval_us: i64,
     pub max_probes: u32,
     pub crossed_grace_us: i64,
+    /// Whether the exchange provides a sequence number or clock that can
+    /// be used to verify backup book freshness. True for Kalshi, false for Polymarket.
+    pub exchange_has_clock: bool,
 }
 
 impl CoreConfig {
@@ -55,6 +58,7 @@ impl CoreConfig {
                 .checked_mul(1_000_000)
                 .context("duration overflows microseconds")
         };
+        let exchange_has_clock = settings.exchange == ExchangeKind::Kalshi;
         Ok(Self {
             exchange: settings.exchange.to_string(),
             shard_count,
@@ -64,6 +68,7 @@ impl CoreConfig {
             probe_interval_us: seconds_to_us(settings.collector.probe_interval_secs)?,
             max_probes: settings.collector.max_probes,
             crossed_grace_us: 2_000_000,
+            exchange_has_clock,
         })
     }
 }
@@ -841,8 +846,9 @@ impl CollectorCore {
         let Some(state) = self.markets.get_mut(native) else {
             return Vec::new();
         };
-        // Drop deltas for symbols that are not in Live continuity state
-        if state.continuity != crate::model::ContinuityState::Live {
+        // Drop deltas for symbols in Resyncing/Stale/Unseeded/Terminal continuity state,
+        // but allow deltas from the active source (which may be sending a repair snapshot).
+        if state.continuity != crate::model::ContinuityState::Live && state.active != Some(source) {
             return Vec::new();
         }
         let clock_regression = clock_regressed(state.emitted_clock, meta.clock);
@@ -1053,7 +1059,7 @@ impl CollectorCore {
                     ResetReason::RequestedRefresh => DiscontinuityReason::StreamReset,
                     ResetReason::Connected => DiscontinuityReason::ActiveSourceLost,
                 };
-                state.start_incident(disc_reason, received_at_us, true);
+                state.start_incident(disc_reason, received_at_us, self.config.exchange_has_clock);
                 self.stats.discontinuity_incidents =
                     self.stats.discontinuity_incidents.saturating_add(1);
                 if matches!(reason, ResetReason::ProtocolError) {
@@ -1098,6 +1104,11 @@ impl CollectorCore {
             }
             if state.active == Some(source) {
                 state.active = None;
+                // Start discontinuity incident on active source loss
+                let disc_reason = DiscontinuityReason::ActiveSourceLost;
+                state.start_incident(disc_reason, now_us, self.config.exchange_has_clock);
+                self.stats.discontinuity_incidents =
+                    self.stats.discontinuity_incidents.saturating_add(1);
                 affected.push(native.clone());
             }
         }
@@ -1189,11 +1200,6 @@ impl CollectorCore {
                 // Transition Live -> Stale when freshness window exceeded
                 if state.continuity == crate::model::ContinuityState::Live {
                     state.set_continuity(crate::model::ContinuityState::Stale);
-                    state.start_incident(DiscontinuityReason::StaleProbeEscalation, now_us, false);
-                    self.stats.discontinuity_incidents =
-                        self.stats.discontinuity_incidents.saturating_add(1);
-                    self.stats.unquantifiable_gaps =
-                        self.stats.unquantifiable_gaps.saturating_add(1);
                 }
                 if now_us.saturating_sub(state.last_probe_us) >= probe_spacing {
                     if state.probes < max_probes {
@@ -1204,6 +1210,15 @@ impl CollectorCore {
                     } else {
                         // Max probes exceeded: Stale -> Resyncing
                         state.set_continuity(crate::model::ContinuityState::Resyncing);
+                        state.start_incident(
+                            DiscontinuityReason::StaleProbeEscalation,
+                            now_us,
+                            false,
+                        );
+                        self.stats.discontinuity_incidents =
+                            self.stats.discontinuity_incidents.saturating_add(1);
+                        self.stats.unquantifiable_gaps =
+                            self.stats.unquantifiable_gaps.saturating_add(1);
                         state.probes = 0;
                         state.last_probe_us = now_us;
                         reconnect.push(active);
@@ -1337,7 +1352,7 @@ impl CollectorCore {
         };
         let previous_active = state.active;
         let was_emitted = state.emitted_any;
-        let backup = best_backup(state, statuses);
+        let backup = best_backup(state, statuses, self.config.exchange_has_clock);
         let Some(backup) = backup else {
             state.active = None;
             let candidates: Vec<SourceId> = state
@@ -1390,6 +1405,10 @@ impl CollectorCore {
         state.probes = 0;
         state.last_probe_us = now_us;
         state.crossed_since_us = None;
+        // Failover/recovery: resolve any open incident
+        if was_emitted || previous_active.is_some() {
+            state.resolve_incident(now_us);
+        }
         if was_emitted || previous_active.is_some() {
             self.stats.source_switches = self.stats.source_switches.saturating_add(1);
             self.stats.failover_snapshots = self.stats.failover_snapshots.saturating_add(1);
@@ -1415,6 +1434,7 @@ fn source_healthy(statuses: &BTreeMap<SourceId, SourceStatus>, source: SourceId)
 fn best_backup(
     state: &MarketState,
     statuses: &BTreeMap<SourceId, SourceStatus>,
+    exchange_has_clock: bool,
 ) -> Option<SourceId> {
     let emitted_clock = state.emitted_clock;
     state
@@ -1429,7 +1449,13 @@ fn best_backup(
                     Some(clock) => book
                         .last_clock
                         .is_some_and(|book_clock| book_clock >= clock),
-                    None => true,
+                    None => {
+                        // For exchanges without clock (Polymarket), only accept a backup
+                        // if a fresh snapshot was explicitly requested (in recovery_sources).
+                        // This prevents promoting a stale shadow book that has no
+                        // sequence/clock to prove its freshness.
+                        exchange_has_clock || state.recovery_sources.contains(*source)
+                    }
                 }
         })
         .max_by_key(|(source, book)| {
