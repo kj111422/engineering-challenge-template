@@ -175,7 +175,9 @@ impl MarketState {
             self.resolved_incidents.push(incident);
         }
         // If no other blocker, go Live; otherwise stay in current state
-        if self.continuity == crate::model::ContinuityState::Resyncing {
+        if self.continuity == crate::model::ContinuityState::Resyncing
+            || self.continuity == crate::model::ContinuityState::Stale
+        {
             self.continuity = crate::model::ContinuityState::Live;
         }
     }
@@ -846,9 +848,10 @@ impl CollectorCore {
         let Some(state) = self.markets.get_mut(native) else {
             return Vec::new();
         };
-        // Drop deltas for symbols in Resyncing/Stale/Unseeded/Terminal continuity state,
-        // but allow deltas from the active source (which may be sending a repair snapshot).
-        if state.continuity != crate::model::ContinuityState::Live && state.active != Some(source) {
+        // Drop deltas for symbols in Resyncing/Stale/Unseeded/Terminal continuity state.
+        // Only an accepted exchange snapshot (via handle_snapshot) may transition
+        // continuity to Live. Deltas cannot re-anchor a book after a possible gap.
+        if state.continuity != crate::model::ContinuityState::Live {
             return Vec::new();
         }
         let clock_regression = clock_regressed(state.emitted_clock, meta.clock);
