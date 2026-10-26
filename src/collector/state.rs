@@ -181,11 +181,6 @@ impl MarketState {
             self.continuity = crate::model::ContinuityState::Live;
         }
     }
-
-    fn mark_terminal(&mut self, now_us: i64) {
-        self.start_incident(DiscontinuityReason::Terminal, now_us, true);
-        self.continuity = crate::model::ContinuityState::Terminal;
-    }
 }
 
 #[derive(Debug, Default)]
@@ -635,9 +630,11 @@ impl CollectorCore {
         meta: EventMeta,
     ) -> Vec<OutputMessage> {
         let Some(state) = self.markets.get_mut(native) else {
+            eprintln!("handle_snapshot: market {} not found", native);
             return Vec::new();
         };
         if !state.books.contains_key(&source) {
+            eprintln!("handle_snapshot: source {:?} not in books", source);
             return Vec::new();
         }
 
@@ -728,10 +725,9 @@ impl CollectorCore {
                     meta.received_at_us,
                     meta.clock.is_some(),
                 );
-                if !meta.clock.is_some() {
-                    self.stats.unquantifiable_gaps =
-                        self.stats.unquantifiable_gaps.saturating_add(1);
-                }
+                // clock_regression requires both clocks to be Some, so this branch
+                // is only reached when meta.clock.is_some() is true.
+                // For Polymarket (no clock), clock_regression is never true.
                 self.stats.discontinuity_incidents =
                     self.stats.discontinuity_incidents.saturating_add(1);
             }
@@ -760,6 +756,18 @@ impl CollectorCore {
             state.recovery_sources.remove(&source);
             return Vec::new();
         }
+        // If no active source, only allow a source that was explicitly requested
+        // for recovery to become active. This prevents a stale shadow snapshot
+        let should_emit = was_active.is_none() || was_active == Some(source);
+        if !should_emit {
+            state.recovery_sources.remove(&source);
+            return Vec::new();
+        }
+        if was_active.is_none() && !self.config.exchange_has_clock && !recovery && was_emitted {
+            // Clockless exchange with no active source and previous emissions: only allow recovery snapshots
+            state.recovery_sources.remove(&source);
+            return Vec::new();
+        }
         if was_active.is_none() || clock_regression || recovery {
             state.recovery_sources.remove(&source);
         }
@@ -779,13 +787,26 @@ impl CollectorCore {
             state.set_continuity(crate::model::ContinuityState::Live);
         } else if was_active.is_none() && was_emitted {
             // Failover/recovery: Resyncing -> Live (if incident resolves)
-            state.resolve_incident(meta.received_at_us);
+            // For clockless exchanges, only resolve if this snapshot was explicitly
+            // requested for recovery (source in recovery_sources).
+            let is_recovery_snapshot = recovery;
+            if self.config.exchange_has_clock || is_recovery_snapshot {
+                state.resolve_incident(meta.received_at_us);
+            }
         } else if was_active == Some(source) {
             // Snapshot on active source: any Stale/Resyncing incident resolves
             // This handles repair after stale probe on the same connection
+            // For clockless exchanges in Resyncing, only accept recovery snapshots.
             if state.continuity == crate::model::ContinuityState::Stale
                 || state.continuity == crate::model::ContinuityState::Resyncing
             {
+                if state.continuity == crate::model::ContinuityState::Resyncing
+                    && !self.config.exchange_has_clock
+                    && !recovery
+                {
+                    // Clockless exchange in Resyncing: only accept recovery snapshots
+                            return Vec::new();
+                }
                 state.resolve_incident(meta.received_at_us);
             }
         } else if clock_regression && was_active == Some(source) {
@@ -793,10 +814,11 @@ impl CollectorCore {
             // Stay in Resyncing until a new snapshot resolves it
         }
         // Update discontinuity stats on resolution
-        if was_active.is_none() && was_emitted {
-            self.stats.discontinuity_incidents =
-                self.stats.discontinuity_incidents.saturating_add(1);
-        }
+        // (Incident count only increments on incident start, not on resolution)
+        // if was_active.is_none() && was_emitted {
+        //     self.stats.discontinuity_incidents =
+        //         self.stats.discontinuity_incidents.saturating_add(1);
+        // }
 
         let message = build_snapshot(
             &state.info,
@@ -950,7 +972,10 @@ impl CollectorCore {
         self.stats.lifecycle_events = self.stats.lifecycle_events.saturating_add(1);
         if kind.is_terminal() || matches!(kind, LifecycleKind::Deactivated) {
             if let Some(state) = self.markets.get_mut(native) {
-                state.mark_terminal(meta.received_at_us);
+                // Terminal lifecycle is not a continuity gap; it's an expected
+                // end of life for the market. Mark as Terminal without starting
+                // a discontinuity incident, then remove.
+                state.set_continuity(crate::model::ContinuityState::Terminal);
             }
             return self.remove_market(native, meta.received_at_us, true);
         }
@@ -1062,9 +1087,14 @@ impl CollectorCore {
                     ResetReason::RequestedRefresh => DiscontinuityReason::StreamReset,
                     ResetReason::Connected => DiscontinuityReason::ActiveSourceLost,
                 };
-                state.start_incident(disc_reason, received_at_us, self.config.exchange_has_clock);
+                let quantifiable = self.config.exchange_has_clock;
+                state.start_incident(disc_reason, received_at_us, quantifiable);
                 self.stats.discontinuity_incidents =
                     self.stats.discontinuity_incidents.saturating_add(1);
+                if !quantifiable {
+                    self.stats.unquantifiable_gaps =
+                        self.stats.unquantifiable_gaps.saturating_add(1);
+                }
                 if matches!(reason, ResetReason::ProtocolError) {
                     self.queue_snapshot(source, &native);
                 }
@@ -1088,6 +1118,7 @@ impl CollectorCore {
     /// snapshot timestamp.
     pub fn handle_status(&mut self, status: SourceStatus, now_us: i64) -> Vec<OutputMessage> {
         let source = status.source;
+        eprintln!("handle_status: source={:?}, shard={}, shards.len={}", source, source.shard, self.shards.len());
         if source.shard as usize >= self.shards.len() {
             return Vec::new();
         }
@@ -1100,20 +1131,27 @@ impl CollectorCore {
         let mut affected = Vec::new();
         for (native, state) in &mut self.markets {
             if state.shard != source.shard as usize {
+                eprintln!("handle_status: SKIP market {} - shard mismatch", native);
                 continue;
             }
             if let Some(book) = state.books.get_mut(&source) {
                 book.invalidate();
             }
-            if state.active == Some(source) {
+                if state.active == Some(source) {
                 state.active = None;
                 // Start discontinuity incident on active source loss
                 let disc_reason = DiscontinuityReason::ActiveSourceLost;
-                state.start_incident(disc_reason, now_us, self.config.exchange_has_clock);
+                let quantifiable = self.config.exchange_has_clock;
+                state.start_incident(disc_reason, now_us, quantifiable);
                 self.stats.discontinuity_incidents =
                     self.stats.discontinuity_incidents.saturating_add(1);
+                if !quantifiable {
+                    self.stats.unquantifiable_gaps =
+                        self.stats.unquantifiable_gaps.saturating_add(1);
+                }
                 affected.push(native.clone());
-            }
+            } else {
+                }
         }
         if self.shutting_down {
             return Vec::new();
@@ -1408,8 +1446,10 @@ impl CollectorCore {
         state.probes = 0;
         state.last_probe_us = now_us;
         state.crossed_since_us = None;
-        // Failover/recovery: resolve any open incident
-        if was_emitted || previous_active.is_some() {
+        // Failover/recovery: resolve any open incident only for exchanges with clocks.
+        // For clockless exchanges (Polymarket), the incident remains open until
+        // a fresh snapshot is received via handle_snapshot with recovery=true.
+        if self.config.exchange_has_clock && (was_emitted || previous_active.is_some()) {
             state.resolve_incident(now_us);
         }
         if was_emitted || previous_active.is_some() {
@@ -1580,7 +1620,10 @@ fn timestamp_or(timestamp_us: i64, fallback: DateTime<Utc>) -> DateTime<Utc> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Level, MarketInfo};
+    use crate::model::{Level, MarketInfo, ContinuityState, DiscontinuityReason, Control, ExchangeEvent, ResetReason, EventMeta, SourceStatus};
+    use crate::metrics::{MetricsRegistry, ReadinessPolicy, RuntimeStatus, CatalogHealth, WriterStats};
+    use crate::persistence::PersistenceStatus;
+    use crate::{Side};
 
     const NOW: i64 = 1_700_000_000_000_000;
     const SOURCE_A: SourceId = SourceId::new(0, 0);
@@ -1594,6 +1637,7 @@ mod tests {
         settings.collector.stale_probe_after_secs = 120;
         settings.collector.probe_interval_secs = 30;
         settings.collector.max_probes = 3;
+        settings.exchange = crate::config::ExchangeKind::Polymarket;
         settings
     }
 
@@ -1679,6 +1723,10 @@ mod tests {
                 clock: Some(clock),
             },
         }
+    }
+
+    fn delta_event(native: &str, side: Side, price: i64, quantity: i64, received_at_us: i64) -> ExchangeEvent {
+        delta_event_at(native, side, price, quantity, 10, received_at_us)
     }
 
     #[test]
@@ -2280,5 +2328,344 @@ mod tests {
         };
         assert_eq!(snapshot.bids[0].price_level, 405_000);
         assert_eq!(core.stats().sequence_resets, 1);
+    }
+
+    #[test]
+    fn source_disconnect_opens_incident_and_blocks_readiness() {
+        let mut core = core();
+        assert!(!core.config.exchange_has_clock, "Polymarket should not have clock");
+        core.apply_discovery(NOW, vec![market("A")]).unwrap();
+        core.drain_controls();
+        
+        // Simulate source connection
+        core.handle_status(
+            SourceStatus {
+                source: SOURCE_A,
+                connected: true,
+                ..SourceStatus::new(SOURCE_A)
+            },
+            NOW,
+        );
+        core.handle_status(
+            SourceStatus {
+                source: SOURCE_B,
+                connected: true,
+                ..SourceStatus::new(SOURCE_B)
+            },
+            NOW,
+        );
+        
+        core.handle_event(SOURCE_A, snapshot_event("A", 400_000, 600_000, 10));
+        assert_eq!(core.markets["A"].continuity(), ContinuityState::Live);
+
+        // Disconnect active source
+        let outputs = core.handle_status(
+            SourceStatus {
+                source: SOURCE_A,
+                connected: false,
+                ..SourceStatus::new(SOURCE_A)
+            },
+            NOW + 1,
+        );
+
+        // Incident opened, continuity should be Resyncing
+        assert_eq!(core.markets["A"].continuity(), ContinuityState::Resyncing);
+        assert!(core.markets["A"].incident.is_some());
+        let incident = core.markets["A"].incident.as_ref().unwrap();
+        assert_eq!(incident.reason, DiscontinuityReason::ActiveSourceLost);
+        assert!(!incident.quantifiable); // Polymarket has no clock
+        assert_eq!(core.stats().discontinuity_incidents, 1);
+        assert_eq!(core.stats().unquantifiable_gaps, 1);
+
+        // Deltas should not be applied while Resyncing
+        let delta_outputs = core.handle_event(SOURCE_B, delta_event("A", Side::Buy, 410_000, 1_000_000, NOW + 2));
+        assert!(delta_outputs.is_empty(), "deltas must not apply while Resyncing");
+    }
+
+    #[test]
+    fn clockless_shadow_recovery_requires_post_incident_snapshot() {
+        let mut core = core();
+        core.apply_discovery(NOW, vec![market("A")]).unwrap();
+        core.drain_controls();
+        
+        // Simulate source connection
+        core.handle_status(
+            SourceStatus {
+                source: SOURCE_A,
+                connected: true,
+                ..SourceStatus::new(SOURCE_A)
+            },
+            NOW,
+        );
+        core.handle_status(
+            SourceStatus {
+                source: SOURCE_B,
+                connected: true,
+                ..SourceStatus::new(SOURCE_B)
+            },
+            NOW,
+        );
+        
+        core.handle_event(SOURCE_A, snapshot_event("A", 400_000, 600_000, 10));
+        core.handle_event(SOURCE_B, snapshot_event("A", 410_000, 590_000, 12));
+        eprintln!("After second snapshot - active: {:?}, continuity: {:?}", core.markets["A"].active, core.markets["A"].continuity());
+
+        // Disconnect active source
+        core.handle_status(
+            SourceStatus {
+                source: SOURCE_A,
+                connected: false,
+                ..SourceStatus::new(SOURCE_A)
+            },
+            NOW + 1,
+        );
+        assert_eq!(core.markets["A"].continuity(), ContinuityState::Resyncing);
+
+        // Shadow source sends a delayed snapshot (received before incident but processed after)
+        let delayed_snapshot = snapshot_event_at("A", 405_000, 595_000, 11, NOW + 2);
+        let outputs = core.handle_event(SOURCE_B, delayed_snapshot);
+        // Should not promote shadow to active because not in recovery_sources
+        assert!(outputs.is_empty(), "shadow snapshot must not re-anchor without recovery request");
+        assert_eq!(core.markets["A"].continuity(), ContinuityState::Resyncing);
+
+        // Now request recovery and send fresh snapshot
+        core.markets.get_mut("A").unwrap().recovery_sources.insert(SOURCE_B);
+        let fresh_snapshot = snapshot_event_at("A", 420_000, 580_000, 13, NOW + 10);
+        let outputs = core.handle_event(SOURCE_B, fresh_snapshot);
+        assert_eq!(outputs.len(), 1);
+        let OutputMessage::Snapshot(snap) = &outputs[0] else { panic!("expected snapshot") };
+        assert_eq!(snap.bids[0].price_level, 420_000);
+        assert_eq!(core.markets["A"].continuity(), ContinuityState::Live);
+    }
+
+    #[test]
+    fn deltas_cannot_re_anchor_stale_or_resyncing_book() {
+        let mut core = core();
+        core.apply_discovery(NOW, vec![market("A")]).unwrap();
+        core.drain_controls();
+        core.handle_event(SOURCE_A, snapshot_event("A", 400_000, 600_000, 10));
+
+        // Force Stale state
+        core.markets.get_mut("A").unwrap().set_continuity(ContinuityState::Stale);
+        let stale_outputs = core.handle_event(SOURCE_A, delta_event("A", Side::Buy, 410_000, 1_000_000, NOW + 1));
+        assert!(stale_outputs.is_empty(), "deltas must not apply in Stale state");
+
+        // Force Resyncing state
+        core.markets.get_mut("A").unwrap().set_continuity(ContinuityState::Resyncing);
+        let resync_outputs = core.handle_event(SOURCE_A, delta_event("A", Side::Buy, 420_000, 1_000_000, NOW + 2));
+        assert!(resync_outputs.is_empty(), "deltas must not apply in Resyncing state");
+
+        // Only snapshot can restore Live
+        core.markets.get_mut("A").unwrap().set_continuity(ContinuityState::Resyncing);
+        let outputs = core.handle_event(SOURCE_A, snapshot_event("A", 410_000, 590_000, 10));
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(core.markets["A"].continuity(), ContinuityState::Live);
+    }
+
+    #[test]
+    fn recovery_snapshot_resolves_incident_without_incrementing_count() {
+        let mut core = core();
+        core.apply_discovery(NOW, vec![market("A")]).unwrap();
+        core.drain_controls();
+        
+        // Simulate source connection
+        core.handle_status(
+            SourceStatus {
+                source: SOURCE_A,
+                connected: true,
+                ..SourceStatus::new(SOURCE_A)
+            },
+            NOW,
+        );
+        core.handle_status(
+            SourceStatus {
+                source: SOURCE_B,
+                connected: true,
+                ..SourceStatus::new(SOURCE_B)
+            },
+            NOW,
+        );
+        
+        core.handle_event(SOURCE_A, snapshot_event("A", 400_000, 600_000, 10));
+        core.handle_event(SOURCE_B, snapshot_event("A", 410_000, 590_000, 12));
+
+        // Disconnect active source
+        core.handle_status(
+            SourceStatus {
+                source: SOURCE_A,
+                connected: false,
+                ..SourceStatus::new(SOURCE_A)
+            },
+            NOW + 1,
+        );
+        let incident_count_at_start = core.stats().discontinuity_incidents;
+        let unquantifiable_at_start = core.stats().unquantifiable_gaps;
+        assert_eq!(incident_count_at_start, 1);
+        assert_eq!(unquantifiable_at_start, 1);
+
+        // Recovery snapshot from shadow
+        let outputs = core.handle_event(SOURCE_B, snapshot_event("A", 420_000, 580_000, 10));
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(core.markets["A"].continuity(), ContinuityState::Live);
+
+        // Incident count should NOT have increased on resolution
+        assert_eq!(core.stats().discontinuity_incidents, incident_count_at_start);
+        assert_eq!(core.stats().unquantifiable_gaps, unquantifiable_at_start);
+    }
+
+    #[test]
+    fn repeated_failure_events_do_not_double_count_incident() {
+        let mut core = core();
+        core.apply_discovery(NOW, vec![market("A")]).unwrap();
+        core.drain_controls();
+        
+        // Simulate source connection
+        core.handle_status(
+            SourceStatus {
+                source: SOURCE_A,
+                connected: true,
+                ..SourceStatus::new(SOURCE_A)
+            },
+            NOW,
+        );
+        
+        core.handle_event(SOURCE_A, snapshot_event("A", 400_000, 600_000, 10));
+
+        // Disconnect active source multiple times
+        core.handle_status(
+            SourceStatus { source: SOURCE_A, connected: false, ..SourceStatus::new(SOURCE_A) },
+            NOW + 1,
+        );
+        core.handle_status(
+            SourceStatus { source: SOURCE_A, connected: false, ..SourceStatus::new(SOURCE_A) },
+            NOW + 2,
+        );
+        core.handle_status(
+            SourceStatus { source: SOURCE_A, connected: false, ..SourceStatus::new(SOURCE_A) },
+            NOW + 3,
+        );
+
+        // Should only count one incident
+        assert_eq!(core.stats().discontinuity_incidents, 1);
+        assert_eq!(core.stats().unquantifiable_gaps, 1);
+    }
+
+    #[test]
+    fn polymarket_source_loss_increments_unquantifiable_gaps() {
+        let mut core = core(); // Uses "test" exchange (no clock)
+        core.apply_discovery(NOW, vec![market("A")]).unwrap();
+        core.drain_controls();
+        core.handle_event(SOURCE_A, snapshot_event("A", 400_000, 600_000, 10));
+
+        // Stream reset (ProtocolError)
+        core.handle_event(SOURCE_A, ExchangeEvent::StreamReset {
+            native_symbols: vec!["A".to_owned()],
+            reason: ResetReason::ProtocolError,
+            received_at_us: NOW + 1,
+        });
+
+        // Should have opened one incident, unquantifiable
+        assert_eq!(core.stats().discontinuity_incidents, 1);
+        assert_eq!(core.stats().unquantifiable_gaps, 1);
+        assert_eq!(core.markets["A"].continuity(), ContinuityState::Resyncing);
+    }
+
+    #[test]
+    fn readiness_fails_for_blocking_continuity_states() {
+        let mut core = core();
+        core.apply_discovery(NOW, vec![market("A"), market("B"), market("C"), market("D")]).unwrap();
+        core.drain_controls();
+        
+        // Simulate source connection
+        core.handle_status(
+            SourceStatus {
+                source: SOURCE_A,
+                connected: true,
+                ..SourceStatus::new(SOURCE_A)
+            },
+            NOW,
+        );
+        core.handle_status(
+            SourceStatus {
+                source: SOURCE_B,
+                connected: true,
+                ..SourceStatus::new(SOURCE_B)
+            },
+            NOW,
+        );
+
+        // A: Live (anchored)
+        core.handle_event(SOURCE_A, snapshot_event("A", 400_000, 600_000, 10));
+        core.markets.get_mut("A").unwrap().recovery_sources.insert(SOURCE_A);
+        // B: Unseeded (no snapshot yet)
+        // C: Resyncing (simulate incident)
+        core.handle_event(SOURCE_A, snapshot_event("C", 400_000, 600_000, 10));
+        core.markets.get_mut("C").unwrap().recovery_sources.insert(SOURCE_A);
+        core.handle_status(
+            SourceStatus { source: SOURCE_A, connected: false, ..SourceStatus::new(SOURCE_A) },
+            NOW + 1,
+        );
+        // D: Terminal
+        core.handle_event(SOURCE_A, snapshot_event("D", 400_000, 600_000, 10));
+        core.markets.get_mut("D").unwrap().recovery_sources.insert(SOURCE_A);
+        core.markets.get_mut("D").unwrap().set_continuity(ContinuityState::Terminal);
+
+        // Check coverage stats
+        let coverage = core.coverage(NOW + 10, 120_000_000);
+        assert_eq!(coverage.unseeded_symbols, 1); // B
+        assert_eq!(coverage.live_symbols, 0); // A is resyncing after source disconnect
+        assert_eq!(coverage.resyncing_symbols, 2); // A and C are resyncing after source disconnect
+        assert_eq!(coverage.terminal_symbols, 1); // D
+        assert_eq!(coverage.stale_symbols_detail, 0);
+        assert_eq!(coverage.expected_symbols, 4);
+        assert_eq!(coverage.anchored_symbols, 2); // A and C have snapshots
+
+        // Check readiness
+        let status = core.statuses().clone();
+        let coverage = core.coverage(NOW + 10, 120_000_000);
+        let mut rt_status = RuntimeStatus::default();
+        rt_status.coverage = coverage;
+        rt_status.catalog = CatalogHealth::default();
+        rt_status.discovery = None;
+        rt_status.discovery_failures = 0;
+        rt_status.persistence = PersistenceStatus::default();
+        rt_status.writer_healthy = true;
+        rt_status.fatal_error = None;
+
+        let registry = MetricsRegistry::new("test", ReadinessPolicy::default());
+        registry.update(core.stats(), WriterStats::default(), &status, rt_status);
+        let report = registry.readiness();
+
+        // Should fail readiness due to unseeded, resyncing, terminal
+        assert!(!report.ready);
+        assert!(!report.checks["unseeded"].ok);
+        assert!(!report.checks["resyncing"].ok);
+        assert!(!report.checks["terminal"].ok);
+    }
+
+    #[test]
+    fn terminal_lifecycle_removes_market_without_discontinuity_incident() {
+        let mut core = core();
+        core.apply_discovery(NOW, vec![market("A")]).unwrap();
+        core.drain_controls();
+        core.handle_event(SOURCE_A, snapshot_event("A", 400_000, 600_000, 10));
+        let incident_count_before = core.stats().discontinuity_incidents;
+
+        // Send terminal lifecycle event
+        core.handle_event(SOURCE_A, ExchangeEvent::Lifecycle {
+            native_symbol: "A".to_owned(),
+            kind: LifecycleKind::Resolved,
+            close_time_us: Some(NOW + 1),
+            title: None,
+            tick_size_us: None,
+            price_ranges: None,
+            price_level_structure: None,
+            meta: EventMeta::new(NOW + 1),
+        });
+
+        // Market should be removed
+        assert!(!core.markets.contains_key("A"));
+        // Incident count should NOT have increased (terminal is not a discontinuity)
+        assert_eq!(core.stats().discontinuity_incidents, incident_count_before);
     }
 }
