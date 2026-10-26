@@ -54,6 +54,14 @@ pub struct CollectorStats {
     pub lifecycle_events: u64,
     pub current_symbols: u64,
     pub shard_count: u64,
+    /// Discontinuity incidents detected (gaps in event continuity)
+    pub discontinuity_incidents: u64,
+    /// Discontinuity incidents where the gap interval is unquantifiable (no sequence/clock)
+    pub unquantifiable_gaps: u64,
+    /// Symbols currently in Resyncing continuity state
+    pub resyncing_symbols: u64,
+    /// Symbols currently in Stale continuity state
+    pub stale_symbols: u64,
 }
 
 /// Counters owned by the writer thread.
@@ -99,6 +107,16 @@ pub struct CoverageStats {
     pub anchored_symbols: u64,
     /// Anchored books whose last valid update exceeded the freshness window.
     pub stale_symbols: u64,
+    /// Symbols in Unseeded continuity state (no snapshot yet)
+    pub unseeded_symbols: u64,
+    /// Symbols in Live continuity state (anchored, fresh, no known gap)
+    pub live_symbols: u64,
+    /// Symbols in Stale continuity state (freshness window exceeded)
+    pub stale_symbols_detail: u64,
+    /// Symbols in Resyncing continuity state (gap incident open)
+    pub resyncing_symbols: u64,
+    /// Symbols in Terminal continuity state (venue lifecycle terminal)
+    pub terminal_symbols: u64,
     /// Subscription entries the configured sources should hold.
     pub expected_subscriptions: u64,
     /// Subscription entries acknowledged as sent by connected sources.
@@ -896,6 +914,11 @@ mod tests {
                 expected_symbols: 10,
                 anchored_symbols: 10,
                 stale_symbols: 0,
+                unseeded_symbols: 0,
+                live_symbols: 10,
+                stale_symbols_detail: 0,
+                resyncing_symbols: 0,
+                terminal_symbols: 0,
                 expected_subscriptions: 20,
                 subscribed_symbols: 20,
                 shards_with_connected_source: 2,

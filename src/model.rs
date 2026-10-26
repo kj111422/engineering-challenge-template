@@ -190,6 +190,86 @@ impl LifecycleKind {
     }
 }
 
+/// Continuity state of a symbol's order book.
+///
+/// This tracks whether a book is seeded, live, stale, resyncing after a
+/// discontinuity, or terminal. It is separate from source connectivity: a
+/// connected socket does not imply a live book, and a self-consistent SBE
+/// capture does not prove complete event receipt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContinuityState {
+    /// No accepted exchange snapshot has established the book.
+    Unseeded,
+    /// An accepted snapshot anchors the active source; no known gap is
+    /// currently unresolved.
+    Live,
+    /// Freshness policy has fired; the book must not be considered eligible
+    /// for downstream risk-increasing use.
+    Stale,
+    /// Continuity uncertain: active-source loss, reset, disconnect, malformed
+    /// frame, or stale-probe escalation. Deltas cannot restore state by
+    /// themselves. A fresh authoritative book is required.
+    Resyncing,
+    /// Venue lifecycle marks the instrument resolved/terminal. Do not
+    /// silently re-enable from a late delta.
+    Terminal,
+}
+
+impl ContinuityState {
+    /// Whether the book may be used for downstream risk-increasing decisions.
+    #[must_use]
+    pub fn is_live(&self) -> bool {
+        matches!(self, Self::Live)
+    }
+
+    /// Whether the book is in a state that blocks risk-increasing actions.
+    #[must_use]
+    pub fn blocks_risk(&self) -> bool {
+        matches!(
+            self,
+            Self::Unseeded | Self::Stale | Self::Resyncing | Self::Terminal
+        )
+    }
+}
+
+/// Reason for a continuity gap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiscontinuityReason {
+    /// Active source lost (disconnect, protocol error)
+    ActiveSourceLost,
+    /// Sequence/clock gap detected
+    SequenceGap,
+    /// Malformed frame rejected
+    MalformedFrame,
+    /// Stale probe escalation (max probes exceeded)
+    StaleProbeEscalation,
+    /// Active source switched (failover)
+    SourceSwitched,
+    /// Stream reset
+    StreamReset,
+    /// Protocol error on the wire
+    ProtocolError,
+    /// Lifecycle terminal event
+    Terminal,
+}
+
+impl fmt::Display for DiscontinuityReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::ActiveSourceLost => "active_source_lost",
+            Self::SequenceGap => "sequence_gap",
+            Self::MalformedFrame => "malformed_frame",
+            Self::StaleProbeEscalation => "stale_probe_escalation",
+            Self::SourceSwitched => "source_switched",
+            Self::StreamReset => "stream_reset",
+            Self::ProtocolError => "protocol_error",
+            Self::Terminal => "terminal",
+        })
+    }
+}
+
 /// Why a source's books must be considered invalid until fresh snapshots
 /// arrive.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -18,8 +18,8 @@ use crate::{
     fixed::SCALE,
     metrics::CollectorStats,
     model::{
-        BookSnapshot, Control, EventMeta, ExchangeEvent, LifecycleKind, MarketInfo, OutputMessage,
-        QuantityChange, ResetReason, SourceId, SourceStatus,
+        BookSnapshot, Control, DiscontinuityReason, EventMeta, ExchangeEvent, LifecycleKind,
+        MarketInfo, OutputMessage, QuantityChange, ResetReason, SourceId, SourceStatus,
     },
     orderbook::OrderBook,
     time::utc_from_us,
@@ -91,6 +91,20 @@ impl SourceBook {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DiscontinuityIncident {
+    /// Symbol name
+    symbol: String,
+    /// Start of the gap (when continuity was lost)
+    started_at_us: i64,
+    /// End of the gap (when re-anchored), if resolved
+    resolved_at_us: Option<i64>,
+    /// Reason continuity was lost
+    reason: crate::model::DiscontinuityReason,
+    /// Whether the gap interval is quantifiable (Kalshi has seq/clock; Polymarket does not)
+    quantifiable: bool,
+}
+
 #[derive(Debug)]
 struct MarketState {
     info: MarketInfo,
@@ -109,6 +123,12 @@ struct MarketState {
     probes: u32,
     last_probe_us: i64,
     crossed_since_us: Option<i64>,
+    /// Per-symbol continuity state
+    continuity: crate::model::ContinuityState,
+    /// Open discontinuity incident (None if no active gap)
+    incident: Option<DiscontinuityIncident>,
+    /// All resolved incidents for this symbol (retained for reporting)
+    resolved_incidents: Vec<DiscontinuityIncident>,
 }
 
 impl MarketState {
@@ -116,6 +136,48 @@ impl MarketState {
         self.active
             .and_then(|source| self.books.get(&source))
             .filter(|book| book.valid)
+    }
+
+    fn continuity(&self) -> crate::model::ContinuityState {
+        self.continuity
+    }
+
+    fn set_continuity(&mut self, new_state: crate::model::ContinuityState) {
+        self.continuity = new_state;
+    }
+
+    fn start_incident(&mut self, reason: DiscontinuityReason, now_us: i64, quantifiable: bool) {
+        if self.incident.is_some() {
+            // Incident already open; update reason if more specific
+            return;
+        }
+        self.incident = Some(DiscontinuityIncident {
+            symbol: self.info.symbol.clone(),
+            started_at_us: now_us,
+            resolved_at_us: None,
+            reason,
+            quantifiable,
+        });
+        // Transition continuity to Resyncing unless Terminal
+        if self.continuity != crate::model::ContinuityState::Terminal {
+            self.continuity = crate::model::ContinuityState::Resyncing;
+        }
+    }
+
+    fn resolve_incident(&mut self, now_us: i64) {
+        if let Some(mut incident) = self.incident.take() {
+            incident.resolved_at_us = Some(now_us);
+            self.resolved_incidents.push(incident);
+        }
+        // If no other blocker, go Live; otherwise stay in current state
+        if self.continuity == crate::model::ContinuityState::Resyncing {
+            self.continuity = crate::model::ContinuityState::Live;
+        }
+    }
+
+    fn mark_terminal(&mut self, now_us: i64) {
+        self.start_incident(DiscontinuityReason::Terminal, now_us, true);
+        self.continuity = crate::model::ContinuityState::Terminal;
     }
 }
 
@@ -295,7 +357,21 @@ impl CollectorCore {
         let mut anchored = 0u64;
         let mut stale = 0u64;
         let mut oldest_anchor_us: Option<i64> = None;
+        let mut unseeded = 0u64;
+        let mut live = 0u64;
+        let mut stale_detail = 0u64;
+        let mut resyncing = 0u64;
+        let mut terminal = 0u64;
         for state in self.markets.values() {
+            match state.continuity {
+                crate::model::ContinuityState::Unseeded => unseeded = unseeded.saturating_add(1),
+                crate::model::ContinuityState::Live => live = live.saturating_add(1),
+                crate::model::ContinuityState::Stale => {
+                    stale_detail = stale_detail.saturating_add(1)
+                }
+                crate::model::ContinuityState::Resyncing => resyncing = resyncing.saturating_add(1),
+                crate::model::ContinuityState::Terminal => terminal = terminal.saturating_add(1),
+            }
             let Some(book) = state.active_book() else {
                 continue;
             };
@@ -332,6 +408,11 @@ impl CollectorCore {
             expected_symbols: self.markets.len() as u64,
             anchored_symbols: anchored,
             stale_symbols: stale,
+            unseeded_symbols: unseeded,
+            live_symbols: live,
+            stale_symbols_detail: stale_detail,
+            resyncing_symbols: resyncing,
+            terminal_symbols: terminal,
             expected_subscriptions,
             subscribed_symbols,
             shards_with_connected_source,
@@ -462,6 +543,9 @@ impl CollectorCore {
             probes: 0,
             last_probe_us: now_us,
             crossed_since_us: None,
+            continuity: crate::model::ContinuityState::Unseeded,
+            incident: None,
+            resolved_incidents: Vec::new(),
         };
         self.shards[shard].symbols.insert(native.clone());
         self.markets.insert(native, state);
@@ -630,6 +714,20 @@ impl CollectorCore {
                 }
             }
             state.recovery_sources.clear();
+            // Clock regression on active source creates a discontinuity
+            if was_active == Some(source) {
+                state.start_incident(
+                    DiscontinuityReason::SequenceGap,
+                    meta.received_at_us,
+                    meta.clock.is_some(),
+                );
+                if !meta.clock.is_some() {
+                    self.stats.unquantifiable_gaps =
+                        self.stats.unquantifiable_gaps.saturating_add(1);
+                }
+                self.stats.discontinuity_incidents =
+                    self.stats.discontinuity_incidents.saturating_add(1);
+            }
         }
 
         {
@@ -667,6 +765,31 @@ impl CollectorCore {
         state.probes = 0;
         state.last_probe_us = meta.received_at_us;
         state.crossed_since_us = None;
+
+        // Manage continuity state
+        if was_active.is_none() && !was_emitted {
+            // First snapshot for this symbol: Unseeded -> Live
+            state.set_continuity(crate::model::ContinuityState::Live);
+        } else if was_active.is_none() && was_emitted {
+            // Failover/recovery: Resyncing -> Live (if incident resolves)
+            state.resolve_incident(meta.received_at_us);
+        } else if was_active == Some(source) {
+            // Snapshot on active source: any Stale/Resyncing incident resolves
+            // This handles repair after stale probe on the same connection
+            if state.continuity == crate::model::ContinuityState::Stale
+                || state.continuity == crate::model::ContinuityState::Resyncing
+            {
+                state.resolve_incident(meta.received_at_us);
+            }
+        } else if clock_regression && was_active == Some(source) {
+            // Active source clock regression: incident already started above
+            // Stay in Resyncing until a new snapshot resolves it
+        }
+        // Update discontinuity stats on resolution
+        if was_active.is_none() && was_emitted {
+            self.stats.discontinuity_incidents =
+                self.stats.discontinuity_incidents.saturating_add(1);
+        }
 
         let message = build_snapshot(
             &state.info,
@@ -718,6 +841,10 @@ impl CollectorCore {
         let Some(state) = self.markets.get_mut(native) else {
             return Vec::new();
         };
+        // Drop deltas for symbols that are not in Live continuity state
+        if state.continuity != crate::model::ContinuityState::Live {
+            return Vec::new();
+        }
         let clock_regression = clock_regressed(state.emitted_clock, meta.clock);
         let (quantity, crossed) = {
             let Some(source_book) = state.books.get_mut(&source) else {
@@ -813,6 +940,9 @@ impl CollectorCore {
     ) -> Vec<OutputMessage> {
         self.stats.lifecycle_events = self.stats.lifecycle_events.saturating_add(1);
         if kind.is_terminal() || matches!(kind, LifecycleKind::Deactivated) {
+            if let Some(state) = self.markets.get_mut(native) {
+                state.mark_terminal(meta.received_at_us);
+            }
             return self.remove_market(native, meta.received_at_us, true);
         }
         let Some(state) = self.markets.get_mut(native) else {
@@ -915,6 +1045,17 @@ impl CollectorCore {
             }
             if state.active == Some(source) {
                 state.active = None;
+                // Start discontinuity incident on active source loss
+                let disc_reason = match reason {
+                    ResetReason::SequenceGap => DiscontinuityReason::SequenceGap,
+                    ResetReason::ProtocolError => DiscontinuityReason::ProtocolError,
+                    ResetReason::SubscriptionRefresh => DiscontinuityReason::StreamReset,
+                    ResetReason::RequestedRefresh => DiscontinuityReason::StreamReset,
+                    ResetReason::Connected => DiscontinuityReason::ActiveSourceLost,
+                };
+                state.start_incident(disc_reason, received_at_us, true);
+                self.stats.discontinuity_incidents =
+                    self.stats.discontinuity_incidents.saturating_add(1);
                 if matches!(reason, ResetReason::ProtocolError) {
                     self.queue_snapshot(source, &native);
                 }
@@ -1045,6 +1186,15 @@ impl CollectorCore {
 
             let last_activity = book.last_received_at_us.unwrap_or(0);
             if last_activity > 0 && now_us.saturating_sub(last_activity) >= stale_after {
+                // Transition Live -> Stale when freshness window exceeded
+                if state.continuity == crate::model::ContinuityState::Live {
+                    state.set_continuity(crate::model::ContinuityState::Stale);
+                    state.start_incident(DiscontinuityReason::StaleProbeEscalation, now_us, false);
+                    self.stats.discontinuity_incidents =
+                        self.stats.discontinuity_incidents.saturating_add(1);
+                    self.stats.unquantifiable_gaps =
+                        self.stats.unquantifiable_gaps.saturating_add(1);
+                }
                 if now_us.saturating_sub(state.last_probe_us) >= probe_spacing {
                     if state.probes < max_probes {
                         probes.push((active, native.clone()));
@@ -1052,6 +1202,8 @@ impl CollectorCore {
                         state.last_probe_us = now_us;
                         probe_count = probe_count.saturating_add(1);
                     } else {
+                        // Max probes exceeded: Stale -> Resyncing
+                        state.set_continuity(crate::model::ContinuityState::Resyncing);
                         state.probes = 0;
                         state.last_probe_us = now_us;
                         reconnect.push(active);
@@ -1085,6 +1237,18 @@ impl CollectorCore {
             outputs.extend(self.reseat(&native, now_us));
         }
         self.stats.current_symbols = self.markets.len() as u64;
+        // Update continuity state breakdown
+        let mut resyncing = 0u64;
+        let mut stale = 0u64;
+        for state in self.markets.values() {
+            match state.continuity {
+                crate::model::ContinuityState::Resyncing => resyncing = resyncing.saturating_add(1),
+                crate::model::ContinuityState::Stale => stale = stale.saturating_add(1),
+                _ => {}
+            }
+        }
+        self.stats.resyncing_symbols = resyncing;
+        self.stats.stale_symbols = stale;
         outputs
     }
 
