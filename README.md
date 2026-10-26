@@ -1,4 +1,6 @@
 # Prediction-market order-book collector
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fkj111422%2Fengineering-challenge-template.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2Fkj111422%2Fengineering-challenge-template?ref=badge_shield)
+
 
 A Rust collector for live prediction-market order books. It writes the supplied
 FIX SBE schema, maintains a book per symbol, discovers markets continuously, and
@@ -699,3 +701,6 @@ scripts/
 ## License
 
 MIT. The supplied SBE schema is unchanged.
+
+
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fkj111422%2Fengineering-challenge-template.svg?type=large)](https://app.fossa.com/projects/git%2Bgithub.com%2Fkj111422%2Fengineering-challenge-template?ref=badge_large)
