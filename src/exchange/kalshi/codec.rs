@@ -101,6 +101,8 @@ pub fn decode_kalshi_message(payload: &str, received_at_us: i64) -> anyhow::Resu
                 exchange_ts_us: sending_ts_us,
                 seq: Some(seq),
                 clock,
+                connection_epoch: 0,
+                receive_seq: 0,
             };
             Ok(KalshiMessage::Snapshot {
                 sid,
@@ -167,6 +169,8 @@ pub fn decode_kalshi_message(payload: &str, received_at_us: i64) -> anyhow::Resu
                 exchange_ts_us,
                 seq: Some(seq),
                 clock,
+                connection_epoch: 0,
+                receive_seq: 0,
             };
             Ok(KalshiMessage::Delta {
                 sid,
@@ -228,6 +232,8 @@ pub fn decode_kalshi_message(payload: &str, received_at_us: i64) -> anyhow::Resu
                 exchange_ts_us: sending_ts_us,
                 seq: Some(seq),
                 clock: None,
+                connection_epoch: 0,
+                receive_seq: 0,
             };
             Ok(KalshiMessage::Lifecycle {
                 sid,

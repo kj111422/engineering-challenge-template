@@ -220,6 +220,8 @@ pub fn run(settings: Settings, input: &Path) -> anyhow::Result<RunReport> {
                         exchange_ts_us,
                         seq,
                         clock,
+                        connection_epoch: 0,
+                        receive_seq: 0,
                     },
                 };
                 let messages = core.handle_event(source, event);
@@ -267,6 +269,8 @@ pub fn run(settings: Settings, input: &Path) -> anyhow::Result<RunReport> {
                         exchange_ts_us,
                         seq,
                         clock,
+                        connection_epoch: 0,
+                        receive_seq: 0,
                     },
                 };
                 let messages = core.handle_event(source, event);
@@ -299,6 +303,8 @@ pub fn run(settings: Settings, input: &Path) -> anyhow::Result<RunReport> {
                         exchange_ts_us,
                         seq: None,
                         clock: None,
+                        connection_epoch: 0,
+                        receive_seq: 0,
                     },
                 };
                 let messages = core.handle_event(source, event);

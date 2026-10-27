@@ -389,6 +389,26 @@ pub struct Settings {
 }
 
 impl Settings {
+    /// Built-in defaults for one explicit venue, without reading configuration
+    /// files or environment variables. Tests use this so their behavior does
+    /// not depend on a developer's shell.
+    #[must_use]
+    pub fn for_exchange(exchange: ExchangeKind) -> Self {
+        let file = FileConfig {
+            exchange,
+            ..FileConfig::default()
+        };
+        Self {
+            exchange: file.exchange,
+            kalshi: file.kalshi,
+            polymarket: file.polymarket,
+            collector: file.collector,
+            network: file.network,
+            output: file.output,
+            metrics: file.metrics,
+        }
+    }
+
     pub fn load(path: Option<&Path>) -> anyhow::Result<Self> {
         let file = match path {
             Some(path) => {

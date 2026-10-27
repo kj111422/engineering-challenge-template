@@ -66,8 +66,7 @@ fn market(condition: &str, token: &str) -> MarketSpec {
 }
 
 fn test_settings(mock: &MockExchange, output: &Path) -> Settings {
-    let mut settings = Settings::load(None).expect("loading default settings");
-    settings.exchange = ExchangeKind::Polymarket;
+    let mut settings = Settings::for_exchange(ExchangeKind::Polymarket);
     settings.polymarket.gamma_url = format!("http://{}", mock.http_addr);
     settings.polymarket.ws_url = format!("ws://{}/ws", mock.ws_addr);
     settings.polymarket.batch_size = 500;
@@ -165,6 +164,40 @@ async fn scrape_metric(address: SocketAddr, metric: &str) -> Option<f64> {
 
 async fn wait_until(what: &str, mut predicate: impl FnMut() -> bool) {
     wait_until_for(WAIT_LIMIT, what, &mut predicate).await;
+}
+
+async fn wait_for_metric_at_least(address: SocketAddr, metric: &str, expected: f64) {
+    let deadline = tokio::time::Instant::now() + WAIT_LIMIT;
+    let mut last = None;
+    loop {
+        if let Some(value) = scrape_metric(address, metric).await {
+            last = Some(value);
+            if value >= expected {
+                return;
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!("timed out waiting for {metric} >= {expected} (last value {last:?})");
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+}
+
+async fn wait_for_no_resyncing_symbols(address: SocketAddr) {
+    let deadline = tokio::time::Instant::now() + WAIT_LIMIT;
+    let mut last = None;
+    loop {
+        if let Some(value) = scrape_metric(address, "collector_symbols_resyncing").await {
+            last = Some(value);
+            if value == 0.0 {
+                return;
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!("timed out waiting for recovery to reach Live (last resyncing value {last:?})");
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
 }
 
 async fn wait_until_for(limit: Duration, what: &str, mut predicate: impl FnMut() -> bool) {
@@ -1270,7 +1303,9 @@ async fn single_socket_loss_fails_over_and_emits_anchoring_snapshot() {
     let output = directory.path().join("socket-loss.sbe");
     let mock = MockExchange::start(vec![market("cond-a", "asset-a")], true).await;
     mock.set_book("asset-a", &[(400_000, 10_000_000)], &[(600_000, 5_000_000)]);
-    let settings = test_settings(&mock, &output);
+    let mut settings = test_settings(&mock, &output);
+    let metrics_address = unused_local_address();
+    settings.metrics.listen = Some(metrics_address);
     let done = Arc::new(Notify::new());
     let handle = spawn_collector(settings, Arc::clone(&done));
 
@@ -1293,7 +1328,14 @@ async fn single_socket_loss_fails_over_and_emits_anchoring_snapshot() {
     let truth_at_loss = mock.book("asset-a");
     let previous_next_id = mock.next_id();
     mock.close_connection(0);
+    // The surviving replica must reconnect with a new connection epoch,
+    // resubscribe, and deliver a fresh exchange snapshot. The coordinator may
+    // only promote it after acknowledging the pending recovery generation.
     mock.wait_for_new_connection(previous_next_id).await;
+    mock.wait_for_subscriptions("asset-a", 2).await;
+    wait_for_metric_at_least(metrics_address, "collector_failover_snapshots_total", 1.0).await;
+    wait_for_no_resyncing_symbols(metrics_address).await;
+    wait_for_metric_at_least(metrics_address, "collector_symbols_anchored", 1.0).await;
     sleep(Duration::from_millis(100)).await;
 
     assert!(mock.publish_delta("asset-a", Side::Buy, 400_000, 15_000_000));
@@ -1317,9 +1359,43 @@ async fn single_socket_loss_fails_over_and_emits_anchoring_snapshot() {
     assert_eq!(reconstructed_book(&capture, SYMBOL_A), mock.book("asset-a"));
     let summary = verify_capture(&output);
     assert!(summary.valid, "verify rejected clean failover: {summary:?}");
-    assert!(report.core.failover_snapshots >= 1);
-    assert!(report.core.source_switches >= 1);
+    assert_eq!(report.core.failover_snapshots, 1);
+    assert_eq!(report.core.source_switches, 1);
+    assert_eq!(report.core.discontinuity_incidents, 1);
+    assert_eq!(report.core.unquantifiable_gaps, 1);
     assert_eq!(report.core.deltas_emitted, 6);
+    assert!(
+        report.sources.iter().any(|source| source.reconnects >= 1),
+        "the recovery path must reconnect at least one source"
+    );
+
+    let delta_positions: Vec<usize> = capture
+        .iter()
+        .enumerate()
+        .filter_map(|(index, message)| {
+            matches!(message, CapturedMessage::Delta { symbol, .. } if symbol == SYMBOL_A)
+                .then_some(index)
+        })
+        .collect();
+    assert_eq!(delta_positions.len(), 6);
+    let replacement_snapshots = capture[delta_positions[3] + 1..delta_positions[4]]
+        .iter()
+        .filter(|message| {
+            matches!(message, CapturedMessage::Snapshot { symbol, .. } if symbol == SYMBOL_A)
+        })
+        .count();
+    assert_eq!(
+        replacement_snapshots, 1,
+        "exactly one fresh snapshot may replace the lost active source"
+    );
+    assert!(
+        mock.subscription_log().iter().any(|frame| {
+            frame.connection >= previous_next_id
+                && frame.operation == "initial_dump"
+                && frame.assets > 0
+        }),
+        "the reconnected source must resubscribe before recovering"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1328,7 +1404,9 @@ async fn full_outage_recovery_exposes_the_uncovered_interval() {
     let output = directory.path().join("outage.sbe");
     let mock = MockExchange::start(vec![market("cond-a", "asset-a")], false).await;
     mock.set_book("asset-a", &[(400_000, 10_000_000)], &[(600_000, 5_000_000)]);
-    let settings = test_settings(&mock, &output);
+    let mut settings = test_settings(&mock, &output);
+    let metrics_address = unused_local_address();
+    settings.metrics.listen = Some(metrics_address);
     let done = Arc::new(Notify::new());
     let handle = spawn_collector(settings, Arc::clone(&done));
 
@@ -1360,7 +1438,12 @@ async fn full_outage_recovery_exposes_the_uncovered_interval() {
     mock.set_suppress_deltas(false);
     mock.wait_for_new_connections(previous_next_id, 2).await;
     mock.wait_for_subscriptions("asset-a", 2).await;
-    sleep(Duration::from_millis(200)).await;
+    // Recovery is only complete after a fresh exchange snapshot has been
+    // accepted against the acknowledged recovery fence and continuity is Live.
+    wait_for_metric_at_least(metrics_address, "collector_failover_snapshots_total", 1.0).await;
+    wait_for_no_resyncing_symbols(metrics_address).await;
+    wait_for_metric_at_least(metrics_address, "collector_symbols_anchored", 1.0).await;
+    sleep(Duration::from_millis(100)).await;
 
     assert!(mock.publish_delta("asset-a", Side::Buy, 400_000, 21_000_000));
     sleep(Duration::from_millis(300)).await;
@@ -1573,7 +1656,9 @@ async fn negative_control_missing_update_is_detected_by_verify() {
     let output = directory.path().join("negative.sbe");
     let mock = MockExchange::start(vec![market("cond-a", "asset-a")], false).await;
     mock.set_book("asset-a", &[(400_000, 10_000_000)], &[(600_000, 5_000_000)]);
-    let settings = test_settings(&mock, &output);
+    let mut settings = test_settings(&mock, &output);
+    let metrics_address = unused_local_address();
+    settings.metrics.listen = Some(metrics_address);
     let done = Arc::new(Notify::new());
     let handle = spawn_collector(settings, Arc::clone(&done));
 
@@ -1600,7 +1685,10 @@ async fn negative_control_missing_update_is_detected_by_verify() {
     mock.wait_for_new_connections(previous_next_id, 2).await;
     mock.set_suppress_deltas(false);
     mock.wait_for_subscriptions("asset-a", 2).await;
-    sleep(Duration::from_millis(200)).await;
+    wait_for_metric_at_least(metrics_address, "collector_failover_snapshots_total", 1.0).await;
+    wait_for_no_resyncing_symbols(metrics_address).await;
+    wait_for_metric_at_least(metrics_address, "collector_symbols_anchored", 1.0).await;
+    sleep(Duration::from_millis(100)).await;
     assert!(mock.publish_delta("asset-a", Side::Buy, 400_000, 21_000_000));
     sleep(Duration::from_millis(300)).await;
     done.notify_one();

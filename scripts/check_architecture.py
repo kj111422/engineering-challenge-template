@@ -65,8 +65,10 @@ SOURCE_RESPONSIBILITIES = {
 REQUIRED_TESTS = {
     "snapshot_anchors_delta_application_in_per_symbol_order",
     "cross_symbol_output_order_is_processing_order_and_not_globally_sorted",
-    "shadow_replica_takes_over_after_source_loss",
-    "failover_snapshot_anchors_resumed_deltas_and_preserves_receive_times",
+    "clocked_shadow_replica_takes_over_after_source_loss",
+    "clocked_failover_anchors_resumed_deltas_and_preserves_receive_times",
+    "clockless_full_recovery_requires_acknowledged_fence_and_fresh_snapshot",
+    "recovery_snapshot_before_ack_is_rejected_without_mutation",
     "single_socket_loss_fails_over_and_emits_anchoring_snapshot",
     "discovery_adds_and_removes_with_controls",
     "discovery_churn_retires_and_adds_symbols",

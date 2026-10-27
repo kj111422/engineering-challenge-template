@@ -137,6 +137,14 @@ pub struct EventMeta {
     pub seq: Option<u64>,
     /// Exchange-wide ordering clock, if the feed supplies one.
     pub clock: Option<i64>,
+    /// Locally assigned connection generation. It increases on every successful
+    /// reconnect and is stamped by the supervisor before the coordinator sees
+    /// the event. Together with `receive_seq` it provides a monotonic receive
+    /// fence that does not depend on wall-clock timestamps.
+    pub connection_epoch: u64,
+    /// Locally assigned, monotonically increasing frame number within
+    /// `connection_epoch`. Frames are numbered in read order before decoding.
+    pub receive_seq: u64,
 }
 
 impl EventMeta {
@@ -147,7 +155,15 @@ impl EventMeta {
             exchange_ts_us: None,
             seq: None,
             clock: None,
+            connection_epoch: 0,
+            receive_seq: 0,
         }
+    }
+
+    /// Whether this event carries a supervisor-assigned receive fence.
+    #[must_use]
+    pub const fn has_receive_fence(&self) -> bool {
+        self.connection_epoch != 0 || self.receive_seq != 0
     }
 
     #[must_use]
@@ -335,8 +351,20 @@ pub enum ExchangeEvent {
 pub enum Control {
     /// Replace this source's desired native symbol set.
     SetSubscriptions(BTreeSet<String>),
-    /// Ask the source to emit fresh snapshots for these symbols.
+    /// Ask the source to emit fresh snapshots for these symbols without a
+    /// recovery trigger. Used for non-incident probes.
     RequestSnapshot(Vec<String>),
+    /// Explicit continuity recovery. The core creates the request before this
+    /// control is sent and only accepts a snapshot whose supervisor-assigned
+    /// receive fence is strictly newer than the acknowledgement sent by the
+    /// worker for `generation`.
+    Recover {
+        generation: u64,
+        symbols: Vec<String>,
+        /// Drop the connection first. The replacement snapshot must then come
+        /// from a later connection epoch.
+        reconnect: bool,
+    },
     /// Drop the connection and reconnect with exponential backoff.
     Reconnect(&'static str),
     /// Close the websocket and stop the worker.

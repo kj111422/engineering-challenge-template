@@ -91,6 +91,16 @@ pub enum WorkerEvent {
         source: SourceId,
         error: String,
     },
+    /// Confirmation that a recovery control was applied. The receive fence is
+    /// the worker's last read `(connection_epoch, receive_seq)` at that
+    /// moment. Snapshot events sent later by this worker carry a strictly
+    /// greater fence, so the core can reject frames read before the request.
+    RecoveryReady {
+        source: SourceId,
+        generation: u64,
+        connection_epoch: u64,
+        receive_seq: u64,
+    },
     Stopped {
         source: SourceId,
     },
@@ -138,6 +148,11 @@ pub async fn run_worker(
     let mut session: Option<Box<dyn MarketDataSession>> = None;
     let mut backoff = config.reconnect_base_backoff;
     let mut attempts = 0u64;
+    // Local receive fence. The epoch changes on every successful connection;
+    // the sequence is reset and then advanced for every frame read, before any
+    // decoding or filtering can hide a frame from recovery ordering.
+    let mut connection_epoch = 0u64;
+    let mut receive_seq = 0u64;
 
     loop {
         if session.is_none() {
@@ -209,6 +224,8 @@ pub async fn run_worker(
                 &mut status,
                 &mut shutdown,
                 backoff,
+                connection_epoch,
+                receive_seq,
             )
             .await
             {
@@ -222,6 +239,8 @@ pub async fn run_worker(
         if attempts > 1 {
             status.reconnects = status.reconnects.saturating_add(1);
         }
+        connection_epoch = connection_epoch.saturating_add(1);
+        receive_seq = 0;
         status.connected = true;
         status.subscriptions = desired.len();
         status.last_error = None;
@@ -267,6 +286,8 @@ pub async fn run_worker(
                 &mut status,
                 &mut shutdown,
                 backoff,
+                connection_epoch,
+                receive_seq,
             )
             .await
             {
@@ -305,6 +326,8 @@ pub async fn run_worker(
                             &mut status,
                             &mut session,
                             &events,
+                            connection_epoch,
+                            receive_seq,
                         )
                         .await;
                         if must_reconnect {
@@ -359,7 +382,9 @@ pub async fn run_worker(
                 biased;
                 frame = read_next_frame(&mut session) => {
                     match frame {
-                        Ok(frame) => {
+                        Ok(mut frame) => {
+                            receive_seq = receive_seq.saturating_add(1);
+                            stamp_frame(&mut frame, connection_epoch, receive_seq);
                             status.messages = status.messages.saturating_add(1);
                             status.bytes_received =
                                 status.bytes_received.saturating_add(frame.bytes as u64);
@@ -427,8 +452,16 @@ pub async fn run_worker(
             }
 
             if let Some(action) = pending_control {
-                must_reconnect =
-                    handle_control(action, &mut desired, &mut status, &mut session, &events).await;
+                must_reconnect = handle_control(
+                    action,
+                    &mut desired,
+                    &mut status,
+                    &mut session,
+                    &events,
+                    connection_epoch,
+                    receive_seq,
+                )
+                .await;
             }
         }
 
@@ -451,6 +484,8 @@ pub async fn run_worker(
             &mut status,
             &mut shutdown,
             backoff,
+            connection_epoch,
+            receive_seq,
         )
         .await
         {
@@ -465,12 +500,15 @@ pub async fn run_worker(
     let _ = events.send(WorkerEvent::Stopped { source }).await;
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_control(
     action: Control,
     desired: &mut BTreeSet<String>,
     status: &mut SourceStatus,
     session: &mut Option<Box<dyn MarketDataSession>>,
     events: &mpsc::Sender<WorkerEvent>,
+    connection_epoch: u64,
+    receive_seq: u64,
 ) -> bool {
     match action {
         Control::SetSubscriptions(next) => {
@@ -504,6 +542,40 @@ async fn handle_control(
                 return true;
             }
             false
+        }
+        Control::Recover {
+            generation,
+            symbols,
+            reconnect,
+        } => {
+            // Acknowledge before any action can push frames back through the
+            // same event channel. The fence is the last frame read before this
+            // control was applied; any later recovery snapshot must be newer.
+            let ack = WorkerEvent::RecoveryReady {
+                source: status.source,
+                generation,
+                connection_epoch,
+                receive_seq,
+            };
+            if reconnect {
+                let _ = events.send(ack).await;
+                warn!(source = %status.source, generation, "recovery reconnect requested");
+                return true;
+            }
+            let mut failed = false;
+            if let Some(active) = session.as_mut()
+                && let Err(failure) = active.request_snapshot(&symbols).await
+            {
+                warn!(
+                    source = %status.source,
+                    error = %format!("{failure:?}"),
+                    "recovery snapshot request failed"
+                );
+                status.last_error = Some(failure_message(&failure));
+                failed = true;
+            }
+            let _ = events.send(ack).await;
+            failed
         }
         Control::Reconnect(reason) => {
             warn!(source = %status.source, reason, "reconnect requested");
@@ -552,6 +624,7 @@ async fn close_and_stop(
 
 /// During backoff, keep accepting control messages so subscription changes and
 /// shutdown do not have to wait for the retry timer.
+#[allow(clippy::too_many_arguments)]
 async fn backoff_or_stop(
     commands: &mut mpsc::Receiver<Control>,
     desired: &mut BTreeSet<String>,
@@ -559,6 +632,8 @@ async fn backoff_or_stop(
     status: &mut SourceStatus,
     shutdown: &mut broadcast::Receiver<()>,
     duration: Duration,
+    connection_epoch: u64,
+    receive_seq: u64,
 ) -> bool {
     let sleep = tokio::time::sleep(duration);
     tokio::pin!(sleep);
@@ -573,6 +648,24 @@ async fn backoff_or_stop(
                     status.subscriptions = desired.len();
                     let _ = events.send(WorkerEvent::Status(status.clone())).await;
                 }
+                Some(Control::Recover {
+                    generation,
+                    reconnect: _,
+                    symbols: _,
+                }) => {
+                    // No frame can be read while backing off. The next
+                    // connection increments the epoch, which makes any
+                    // subsequent exchange snapshot strictly newer than this
+                    // acknowledgement.
+                    let _ = events
+                        .send(WorkerEvent::RecoveryReady {
+                            source: status.source,
+                            generation,
+                            connection_epoch,
+                            receive_seq,
+                        })
+                        .await;
+                }
                 Some(Control::Reconnect(_)) | Some(Control::RequestSnapshot(_)) => {}
             },
         }
@@ -583,6 +676,21 @@ fn next_backoff(current: Duration, maximum: Duration) -> Duration {
     let doubled = current.saturating_mul(2).min(maximum);
     let jitter = 0.8 + rand::random::<f64>() * 0.4;
     doubled.mul_f64(jitter).min(maximum)
+}
+
+/// Attach the supervisor's receive fence to every decoded event.
+fn stamp_frame(frame: &mut SessionFrame, connection_epoch: u64, receive_seq: u64) {
+    for event in &mut frame.events {
+        match event {
+            ExchangeEvent::Snapshot { meta, .. }
+            | ExchangeEvent::LevelChange { meta, .. }
+            | ExchangeEvent::Lifecycle { meta, .. } => {
+                meta.connection_epoch = connection_epoch;
+                meta.receive_seq = receive_seq;
+            }
+            ExchangeEvent::StreamReset { .. } => {}
+        }
+    }
 }
 
 fn update_latency(status: &mut SourceStatus, events: &[ExchangeEvent]) {
@@ -664,7 +772,8 @@ mod tests {
             }
         });
 
-        let mut settings = crate::config::Settings::load(None).unwrap();
+        let mut settings =
+            crate::config::Settings::for_exchange(crate::config::ExchangeKind::Polymarket);
         settings.polymarket.ws_url = format!("ws://{address}");
         settings.network.connect_timeout_secs = 1;
         let exchange = std::sync::Arc::new(
@@ -779,7 +888,8 @@ mod tests {
 
     #[tokio::test]
     async fn connect_concurrency_is_bounded_across_workers() {
-        let mut settings = crate::config::Settings::load(None).unwrap();
+        let mut settings =
+            crate::config::Settings::for_exchange(crate::config::ExchangeKind::Polymarket);
         settings.collector.connect_concurrency = 2;
         let gauge = Arc::new(ConnectGauge {
             current: AtomicUsize::new(0),

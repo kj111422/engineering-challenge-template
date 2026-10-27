@@ -628,6 +628,14 @@ where
             Ok(Some(WorkerEvent::Fatal { source, error })) => {
                 warn!(%source, error, "source failed during shutdown");
             }
+            Ok(Some(WorkerEvent::RecoveryReady {
+                source,
+                generation,
+                connection_epoch,
+                receive_seq,
+            })) => {
+                core.handle_recovery_ready(source, generation, connection_epoch, receive_seq);
+            }
             Ok(None) | Err(_) => break,
         }
     }
@@ -817,6 +825,14 @@ async fn process_worker_event(
         WorkerEvent::Fatal { source, error } => {
             bail!("source {source} reported a fatal error: {error}");
         }
+        WorkerEvent::RecoveryReady {
+            source,
+            generation,
+            connection_epoch,
+            receive_seq,
+        } => {
+            core.handle_recovery_ready(source, generation, connection_epoch, receive_seq);
+        }
         WorkerEvent::Stopped { source } => {
             active_sources.remove(&source);
         }
@@ -1002,7 +1018,7 @@ mod tests {
     }
 
     fn settings_with_catalog(mode: CatalogMode, path: &std::path::Path) -> Settings {
-        let mut settings = Settings::load(None).unwrap();
+        let mut settings = Settings::for_exchange(ExchangeKind::Polymarket);
         settings.collector.catalog_mode = mode;
         settings.collector.catalog_path = Some(path.to_path_buf());
         settings.collector.catalog_max_age_secs = 3_600;

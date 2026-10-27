@@ -238,7 +238,7 @@ mod tests {
     }
 
     fn settings(shards: usize, per_socket: usize, max_shards: usize) -> Settings {
-        let mut settings = Settings::load(None).unwrap();
+        let mut settings = Settings::for_exchange(crate::config::ExchangeKind::Polymarket);
         settings.collector.shards = shards;
         settings.collector.max_symbols_per_socket = per_socket;
         settings.collector.max_shards = max_shards;

@@ -97,6 +97,8 @@ fn decode_object(
         exchange_ts_us,
         seq: None,
         clock: None,
+        connection_epoch: 0,
+        receive_seq: 0,
     };
     match event_type {
         "book" => {

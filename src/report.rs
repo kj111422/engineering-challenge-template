@@ -375,7 +375,7 @@ mod tests {
 
     #[test]
     fn report_config_records_the_durability_policy() {
-        let mut settings = Settings::load(None).unwrap();
+        let mut settings = Settings::for_exchange(crate::config::ExchangeKind::Polymarket);
         settings.output.sync_on_close = false;
         let config = ReportConfig::from_settings(&settings, 4);
         assert!(!config.output_sync_on_close);

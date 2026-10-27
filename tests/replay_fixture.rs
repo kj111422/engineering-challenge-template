@@ -17,7 +17,7 @@ use engineering_challenge::{
 fn sample_fixture_replays_through_the_same_core_and_decodes() {
     let directory = tempfile::tempdir().unwrap();
     let output = directory.path().join("replay.sbe");
-    let mut settings = Settings::load(None).unwrap();
+    let mut settings = Settings::for_exchange(engineering_challenge::config::ExchangeKind::Kalshi);
     settings.output.path = output.display().to_string();
     settings.output.chunk_size = 4096;
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/sample_replay.jsonl");
@@ -58,7 +58,7 @@ fn replay_rejects_out_of_range_timestamps_before_serialization() {
         ),
     )
     .unwrap();
-    let mut settings = Settings::load(None).unwrap();
+    let mut settings = Settings::for_exchange(engineering_challenge::config::ExchangeKind::Kalshi);
     settings.output.path = output.display().to_string();
     settings.output.chunk_size = 4096;
     let error = replay::run(settings, &fixture).unwrap_err();

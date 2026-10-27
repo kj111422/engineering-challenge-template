@@ -634,6 +634,8 @@ mod tests {
                 exchange_ts_us: Some(timestamp),
                 seq: None,
                 clock: Some(timestamp),
+                connection_epoch: 0,
+                receive_seq: 0,
             },
         }
     }

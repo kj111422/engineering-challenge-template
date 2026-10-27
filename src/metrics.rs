@@ -42,6 +42,10 @@ pub struct CollectorStats {
     pub empty_snapshots: u64,
     pub deltas_emitted: u64,
     pub deltas_rejected: u64,
+    /// Clockless recovery snapshots rejected because they preceded the
+    /// acknowledged recovery fence or arrived without an active generation.
+    #[serde(default)]
+    pub rejected_recovery_snapshots: u64,
     pub sequence_resets: u64,
     /// Kalshi exchange-clock decreases observed on an active book. These are
     /// expected across exchange maintenance and start a new comparison epoch.
@@ -620,6 +624,11 @@ impl MetricsRegistry {
             core.deltas_rejected
         );
         counter!(
+            "collector_recovery_snapshots_rejected_total",
+            "Clockless recovery snapshots rejected before the recovery fence",
+            core.rejected_recovery_snapshots
+        );
+        counter!(
             "collector_sequence_resets_total",
             "Source resets caused by sequence/stream faults",
             core.sequence_resets
@@ -698,6 +707,11 @@ impl MetricsRegistry {
             "collector_symbols_stale",
             "Anchored symbols outside the freshness window",
             snapshot.coverage.stale_symbols
+        );
+        gauge!(
+            "collector_symbols_resyncing",
+            "Symbols waiting for a recovery snapshot after a continuity gap",
+            snapshot.coverage.resyncing_symbols
         );
         gauge!(
             "collector_anchor_fraction",
