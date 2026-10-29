@@ -20,6 +20,7 @@ use crate::{
         auth::{HEADER_KEY, HEADER_SIGNATURE, HEADER_TIMESTAMP},
         codec::{KalshiMessage, decode_kalshi_message},
     },
+    journal::{DecodeOutcome, FrameKind, RawFrame},
     model::SourceId,
     session::{MarketDataSession, SessionFactory, SessionFailure, SessionFrame},
     time::now_us,
@@ -498,42 +499,82 @@ impl MarketDataSession for KalshiSession {
         let payload = ws::next_payload(self.stream_mut()?)
             .await
             .map_err(SessionFailure::Reconnect)?;
-        let text = match payload {
+        let received_at_us = now_us().unwrap_or(0);
+        let (text, kind) = match payload {
             WsPayload::Idle => return Ok(SessionFrame::idle(0)),
-            WsPayload::Text(text) => text,
+            WsPayload::Text(text) => (text, FrameKind::Text),
+            WsPayload::Binary(bytes) => match String::from_utf8(bytes.clone()) {
+                Ok(text) => (text, FrameKind::Binary),
+                Err(error) => {
+                    return Err(SessionFailure::Decode {
+                        error: anyhow::Error::new(error)
+                            .context("Kalshi binary frame was not UTF-8 JSON"),
+                        frame: Some(RawFrame {
+                            kind: FrameKind::Binary,
+                            payload: bytes,
+                        }),
+                        received_at_us,
+                    });
+                }
+            },
         };
         let bytes = text.len();
-        let received_at_us = now_us().unwrap_or(0);
-        let message = decode_kalshi_message(&text, received_at_us)
-            .map_err(|error| SessionFailure::Decode(error.context("decoding Kalshi frame")))?;
+        let message = decode_kalshi_message(&text, received_at_us).map_err(|error| {
+            SessionFailure::Decode {
+                error: error.context("decoding Kalshi frame"),
+                frame: Some(RawFrame {
+                    kind,
+                    payload: text.clone().into_bytes(),
+                }),
+                received_at_us,
+            }
+        })?;
         match message {
             KalshiMessage::Snapshot { sid, seq, event } => {
                 if !self.seq.on_snapshot(sid, seq) {
                     return Ok(SessionFrame::idle(bytes));
                 }
-                Ok(SessionFrame {
-                    events: vec![event],
+                Ok(SessionFrame::data(
+                    vec![event],
                     bytes,
-                })
+                    RawFrame {
+                        kind,
+                        payload: text.into_bytes(),
+                    },
+                    DecodeOutcome::decoded(1),
+                    received_at_us,
+                ))
             }
             KalshiMessage::Delta { sid, seq, event } => {
                 self.seq
                     .on_delta(sid, seq)
                     .map_err(|error| SessionFailure::Protocol(anyhow::anyhow!(error)))?;
-                Ok(SessionFrame {
-                    events: vec![event],
+                Ok(SessionFrame::data(
+                    vec![event],
                     bytes,
-                })
+                    RawFrame {
+                        kind,
+                        payload: text.into_bytes(),
+                    },
+                    DecodeOutcome::decoded(1),
+                    received_at_us,
+                ))
             }
             KalshiMessage::Lifecycle { sid, event, .. } => {
                 if self
                     .lifecycle_sid
                     .is_none_or(|lifecycle_sid| lifecycle_sid == sid)
                 {
-                    Ok(SessionFrame {
-                        events: vec![event],
+                    Ok(SessionFrame::data(
+                        vec![event],
                         bytes,
-                    })
+                        RawFrame {
+                            kind,
+                            payload: text.into_bytes(),
+                        },
+                        DecodeOutcome::decoded(1),
+                        received_at_us,
+                    ))
                 } else {
                     Ok(SessionFrame::idle(bytes))
                 }

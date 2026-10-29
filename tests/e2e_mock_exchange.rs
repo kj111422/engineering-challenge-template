@@ -32,6 +32,7 @@ use engineering_challenge::{
     config::{ExchangeKind, Settings},
     coordinator,
     fixed::format_micros,
+    journal,
     report::RunReport,
     time::now_us,
     util::{
@@ -1882,8 +1883,74 @@ async fn rotation_produces_a_complete_manifest_and_readable_segments() {
     }
 }
 
-/// Opt-in scale harness. Run one size at a time, for example:
-///
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn journal_finalizes_and_verifies_on_graceful_shutdown() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let output = directory.path().join("journal.sbe");
+    let journal_root = directory.path().join("journal");
+    let mock = MockExchange::start(vec![market("cond-journal", "asset-journal")], false).await;
+    mock.set_book(
+        "asset-journal",
+        &[(400_000, 10_000_000)],
+        &[(600_000, 5_000_000)],
+    );
+    let mut settings = test_settings(&mock, &output);
+    settings.journal.directory = Some(journal_root.clone());
+    settings.journal.segment_max_bytes = 4096;
+    let done = Arc::new(Notify::new());
+    let handle = spawn_collector(settings, Arc::clone(&done));
+
+    mock.wait_for_total_subscriptions(2).await;
+    sleep(Duration::from_millis(200)).await;
+    for index in 0..120i64 {
+        assert!(mock.publish_delta(
+            "asset-journal",
+            Side::Buy,
+            400_000,
+            (11 + index) * 1_000_000
+        ));
+    }
+    sleep(Duration::from_secs(1)).await;
+    done.notify_one();
+    let report = finish_collector(handle).await;
+
+    let status = report.journal.expect("journal status in the run report");
+    assert_eq!(status.state, journal::RunState::Finalized);
+    assert!(status.last_error.is_none());
+    assert!(status.counters.finalized >= 120);
+    assert!(status.counters.segments >= 2);
+    assert_eq!(status.counters.finalized, status.counters.written);
+
+    let run_directory = std::path::PathBuf::from(&status.run_directory);
+    let verification = journal::verify_run(&run_directory).expect("verifying the run");
+    assert!(verification.complete, "{:?}", verification.errors);
+    assert_eq!(verification.record_count, status.counters.finalized);
+    assert!(verification.segments.len() >= 2);
+
+    let records = journal::read_records(&run_directory).expect("reading journal records");
+    assert_eq!(records.len() as u64, verification.record_count);
+    let mut last_seq = BTreeMap::<String, u64>::new();
+    let mut price_change_payloads = 0usize;
+    for record in records {
+        assert_eq!(record.schema_version, journal::JOURNAL_SCHEMA_VERSION);
+        assert!(record.received_at_us > 0);
+        let previous = last_seq
+            .insert(record.source.clone(), record.receive_seq)
+            .unwrap_or(0);
+        assert!(
+            record.receive_seq > previous,
+            "sequence must advance for {}",
+            record.source
+        );
+        let text = String::from_utf8(record.payload).expect("Polymarket text payload");
+        if text.contains("\"price_change\"") {
+            price_change_payloads += 1;
+        }
+    }
+    assert!(price_change_payloads >= 120);
+}
+
+/// Opt-in scale harness. Run one size at a time, for example:///
 /// `SCALE_SYMBOLS=5000 SCALE_REPORT=measurements/scale-5000.json \
 ///  cargo test --release --test e2e_mock_exchange opt_in_scale_run -- --ignored --nocapture`
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

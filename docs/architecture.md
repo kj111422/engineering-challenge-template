@@ -2,9 +2,9 @@
 
 **Scope:** This document preserves the audit of the uploaded source archive `engineering-challenge-2026-10-26.zip`, SHA-256 `1a8d6e3d7ba53e3369d3cbac854405d96451dfd4a00a1b274e39b9c17c51188d`. The archive had no `.git` directory; its findings apply to that historical snapshot, not to the current `main` branch.
 
-**Historical disposition:** The archived snapshot had module/API integration blockers. The audit's 2026-10-27 note records that `capacity`, `catalog`, and `persistence` were later integrated. The current `main` at `9ab6cd5a584fea58c0086efa50d55c796e9aac4` has passing [Rust CI](https://github.com/kj111422/engineering-challenge-template/actions/runs/40403111336) and [architecture CI](https://github.com/kj111422/engineering-challenge-template/actions/runs/40403111133). The diagrams below intentionally describe the earlier ZIP snapshot and must not be used as the current runtime topology. See [`docs/production-roadmap-polymarket.md`](production-roadmap-polymarket.md) for the active production target and staged gates.
+**Historical disposition:** The archived snapshot had module/API integration blockers. The audit's 2026-10-27 note records that `capacity`, `catalog`, and `persistence` were later integrated. The current `main` at `9ab6cd5a584fea58c0086efa50d55c796e9aac4` has passing [Rust CI](https://github.com/kj111422/engineering-challenge-template/actions/runs/40403111336) and [architecture CI](https://github.com/kj111422/engineering-challenge-template/actions/runs/40403111133). The diagrams below describe the earlier ZIP snapshot and must not be used as the current runtime topology. See [`docs/production-roadmap-polymarket.md`](production-roadmap-polymarket.md) for the active production target and staged gates.
 
-This is deliberately a set of linked views rather than one unreadable mega-graph. Arrows describe control or data flow; node labels name the implementation boundary. Source paths, test symbols, crate-root reachability, and known integration blockers make each material claim auditable. “Present in source” does not mean “compiled”, “called at runtime”, or “tested”.
+This is a set of linked views rather than one unreadable mega-graph. Arrows describe control or data flow; node labels name the implementation boundary. Source paths, test symbols, crate-root reachability, and known integration blockers make each material claim auditable. “Present in source” does not mean “compiled”, “called at runtime”, or “tested”.
 
 ## 1. System topology — runtime components and boundaries
 
@@ -244,7 +244,7 @@ flowchart TD
     Result -->|no| Ok["Return completed RunReport"]
 ```
 
-Final snapshots are generated before shutdown is broadcast. During the bounded worker wait, post-final data events are intentionally suppressed, while final status events can still update report state. A writer or finalization failure is retained as a shutdown error and returned instead of being silently reported as success. The writer's own shutdown path uses queue closure plus thread join to terminate even when the queue was saturated.
+Final snapshots are generated before shutdown is broadcast. During the bounded worker wait, post-final data events are suppressed, while final status events can still update report state. A writer or finalization failure is retained as a shutdown error and returned instead of being silently reported as success. The writer's own shutdown path uses queue closure plus thread join to terminate even when the queue was saturated.
 
 ## 8. CLI modes and verification planes
 
@@ -278,7 +278,7 @@ The test strategy has separate assurance planes:
 - Unit tests exercise fixed-point arithmetic, order-book transitions, venue codecs/discovery, sequence recovery, sharding/failover, metrics, reports and writer fault paths.
 - `tests/e2e_mock_exchange.rs` runs a loopback mock REST/WebSocket exchange through the real coordinator and Polymarket path; the mock's independently recorded delivered-update history is the event-completeness oracle for that test.
 - `tests/replay_fixture.rs` confirms a deterministic JSONL fixture follows the same core/output/reader path.
-- `tests/live_polymarket.rs` is ignored unless explicitly enabled. A successful short public run is not proof of full-universe live capacity or long-term completeness.
+- `tests/live_polymarket.rs` is ignored unless `RUN_LIVE_TESTS=1` is set. A successful short public run is not proof of full-universe live capacity or long-term completeness.
 
 ## 9. Repository-level artifacts and configuration contracts
 
@@ -287,10 +287,10 @@ The test strategy has separate assurance planes:
 | `Cargo.toml` / `Cargo.lock` / `rust-toolchain.toml` | Dependency graph, reproducible dependency resolution, pinned compiler/toolchain | Build and lint gates must use the lockfile and pinned toolchain |
 | `sbe_schemas/engineering_challenge/challenge_orderbook.yaml` and `sbe_schemas/includes/common-types.xml` | Authoritative SBE wire schema and shared schema types | Schema changes require codec/read-write compatibility evidence and fixture checks |
 | `config.example.toml` / `config.polymarket.example.toml` | Configuration examples | Defaults, documented limits and derived shard counts must agree with `src/config.rs` |
-| `fixtures/sample_replay.jsonl` | Deterministic normalized event sequence for replay integration | Schema changes must update fixture compatibility tests deliberately |
+| `fixtures/sample_replay.jsonl` | Deterministic normalized event sequence for replay integration | Schema changes must update fixture compatibility tests |
 | `measurements/*.json` / `docs/latency.md` | Individual connection/latency observations, not a statistically controlled benchmark | Keep parameters, run dates, and caveats attached; do not promote hypotheses to conclusions |
 | `docs/requirement-test-matrix.md` and dated verification records | Requirement-level evidence and explicit test/production non-claims | Update when requirements, tested envelopes, counts, or CI evidence change |
-| `.github/workflows/ci.yml` / `.github/workflows/live.yml` | Offline correctness gates and opt-in public-feed check | Preserve credentials boundaries and keep network tests explicitly opt-in |
+| `.github/workflows/ci.yml` / `.github/workflows/live.yml` | Offline correctness gates and opt-in public-feed check | Preserve credentials boundaries and keep network tests opt-in |
 | `.github/workflows/architecture.yml` | Source/test inventory sync plus actual Mermaid parser in CI | This gate must be green before architecture changes merge |
 
 The runtime configuration is validated by `Settings::validate`; the important sizing relationship is `symbols_per_socket = ceil(discovered_symbols / shard_count)`, with both `max_symbols_per_socket` and `max_shards` enforced when automatic sharding is selected. Replica count multiplies source sockets: `total_source_connections = shard_count × replicas`. These are admission bounds, not evidence that the remote exchange accepts that many concurrent sockets.
@@ -305,13 +305,14 @@ The runtime configuration is validated by `Settings::validate`; the important si
 | Clockless recovery requires an acknowledged receive fence and a fresh exchange snapshot | `src/collector/state.rs`: `request_recovery`, `handle_recovery_ready`, clockless gate in `handle_snapshot`; `src/session.rs`: receive-fence stamping, `Control::Recover` acknowledgement | `clockless_full_recovery_requires_acknowledged_fence_and_fresh_snapshot`, `recovery_snapshot_before_ack_is_rejected_without_mutation`, `delayed_pre_incident_frame_is_rejected_by_receive_fence`, `shadow_snapshot_does_not_consume_recovery_token` | Deltas never restore `Live`; a shadow snapshot is book evidence only. |
 | Discovery churn retires and adds symbols | `src/collector/state.rs`: `apply_discovery`, `remove_market`; `src/coordinator.rs` discovery result branch | `discovery_adds_and_removes_with_controls`, E2E `discovery_churn_retires_and_adds_symbols` | On accepted discovery results; unsuccessful or empty results with active symbols preserve the current set. |
 | Writer queue/backpressure and shutdown errors are explicit | `src/writer.rs`: `send`, `shutdown_inner` | `normal_shutdown_drains_and_joins`, `shutdown_drains_saturated_queue_and_joins`, `finish_failure_on_shutdown_is_reported` | Tests are source declarations. Existing-path truncation remains; rotation/retention is absent. |
+| Raw-frame journal preserves exact payloads and fails instead of dropping | `src/journal.rs`: `JournalHandle`, `Manifest`, `verify_run`, `read_records`; `src/coordinator.rs`: `start_journal`, finalization in `run_with_shutdown` | `payload_bytes_survive_write_and_read`, `checksum_mismatch_and_corrupt_manifest_fail_verification`, `queue_saturation_fails_instead_of_dropping`, `graceful_shutdown_finalizes_rotated_segments`, E2E `journal_finalizes_and_verifies_on_graceful_shutdown` | Applies to live collection when `journal.directory` is set. The SBE schema and output stream are unchanged. |
 | `verify` detects a missed update when a later snapshot exposes divergence | `src/verify.rs`: `run` | E2E `negative_control_missing_update_is_detected_by_verify` | Self-consistency check only; it cannot detect every missing or overwritten event. |
 | Live test exists for the public Polymarket feed | `src/exchange/polymarket/{discovery,codec,session}.rs`; `tests/live_polymarket.rs` | `discovers_and_subscribes_to_public_polymarket_books`, `resubscribing_an_asset_returns_a_fresh_book` | Opt-in network tests; not long soak or full-universe capacity proof. |
 | Startup capacity plan enforces connection, subscription-frame, memory, and snapshot-rate ceilings | `src/capacity.rs` contains a `plan` function | `plan_reports_markets_and_outcomes_separately`, `plan_rejects_each_declared_ceiling`, `plan_is_inclusive_at_each_boundary` are in an unrooted file | **NOT ACTIVE.** `coordinator.rs` does not call `capacity::plan`; `config.rs` lacks the referenced limit fields; these tests are not compiled through `lib.rs`. |
 | Versioned catalog checkpoint can be loaded and checksummed | `src/catalog.rs` contains `Catalog::load` / `Catalog::save` | `round_trips_and_reports_age`, `rejects_a_modified_market_list`, `rejects_count_mismatch_and_unknown_schema`, `checksum_is_exchange_specific` are in an unrooted file | **NOT ACTIVE.** `catalog.rs` is not declared in `lib.rs`, and its imports do not currently resolve. |
 | Background latest-wins persistence writes metadata/catalog | `src/persistence.rs` contains `PersistenceHandle` | `writes_metadata_and_catalog_and_reports_success`, `catalog_generation_time_is_independent_of_metadata_time`, `latest_submission_wins_over_intermediate_versions`, `submit_does_not_block_on_a_slow_write`, `write_failure_is_reported_and_the_worker_survives` are in an unrooted file | **NOT ACTIVE.** `persistence.rs` is not declared in `lib.rs`; `coordinator.rs` still writes metadata synchronously using `MarketMetadata::write`. |
 
-The generated inventories enumerate all source files and test-attributed functions, whether or not their containing module is reachable from a crate root. The inventory therefore includes draft tests that `cargo test` cannot discover until their modules are wired into the crate. Reachability is marked explicitly in both inventory files. A source inventory is not a passing-test report.
+The generated inventories enumerate all source files and test-attributed functions, whether or not their containing module is reachable from a crate root. The inventory therefore includes draft tests that `cargo test` cannot discover until their modules are wired into the crate. Reachability is marked in both inventory files. A source inventory is not a passing-test report.
 
 ## 13. Historical integration audit (superseded)
 
@@ -321,7 +322,7 @@ catalog, and persistence are now crate-root reachable and coordinator-wired.
 The architecture checker verifies those call sites directly. Current validation
 status must come from the final command outputs, not this historical section.
 
-The following source files are present in the tree and declared in `lib.rs`, but their integration into the active coordinator path is blocked by missing dependencies or missing wiring. Their test symbols appear in the static test inventory but are explicitly flagged as **INTEGRATION BLOCKED** and do not constitute passing-test evidence for the active runtime.
+The following source files are present in the tree and declared in `lib.rs`, but their integration into the active coordinator path is blocked by missing dependencies or missing wiring. Their test symbols appear in the static test inventory but are flagged as **INTEGRATION BLOCKED** and do not constitute passing-test evidence for the active runtime.
 
 | File | Intended role | Blocker |
 |---|---|---|
@@ -366,7 +367,7 @@ Run locally from repository root:
 
 ```bash
 # Regenerate static inventories after a reviewed source/test change.
-# It intentionally may exit non-zero if source integration blockers remain.
+# It may exit non-zero if source integration blockers remain.
 python3 scripts/check_architecture.py --update
 
 # The final read-only gate; this must be green before merge.

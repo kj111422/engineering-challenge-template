@@ -175,5 +175,5 @@ measured once.
 
 The command writes the JSON report to `--out` and prints the same JSON to
 stdout. Run each configuration several times if you need a distribution across
-network conditions; do not average separate runs unless you label that
-aggregate explicitly.
+network conditions; do not average separate runs unless the aggregate carries
+a label.

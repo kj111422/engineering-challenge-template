@@ -14,6 +14,7 @@ use tracing::{info, warn};
 
 use crate::{
     config::CollectorSettings,
+    journal::{DecodeOutcome, JournalHandle, RawFrame},
     model::{Control, ExchangeEvent, ResetReason, SourceId, SourceStatus},
     time::now_us,
 };
@@ -23,6 +24,11 @@ use crate::{
 pub struct SessionFrame {
     pub events: Vec<ExchangeEvent>,
     pub bytes: usize,
+    /// Exact payload, retained for the raw-frame journal. Transport heartbeat
+    /// frames that carry no application payload leave this empty.
+    pub raw: Option<RawFrame>,
+    pub decode: DecodeOutcome,
+    pub received_at_us: Option<i64>,
 }
 
 impl SessionFrame {
@@ -31,6 +37,26 @@ impl SessionFrame {
         Self {
             events: Vec::new(),
             bytes,
+            raw: None,
+            decode: DecodeOutcome::default(),
+            received_at_us: None,
+        }
+    }
+
+    #[must_use]
+    pub fn data(
+        events: Vec<ExchangeEvent>,
+        bytes: usize,
+        raw: RawFrame,
+        decode: DecodeOutcome,
+        received_at_us: i64,
+    ) -> Self {
+        Self {
+            events,
+            bytes,
+            raw: Some(raw),
+            decode,
+            received_at_us: Some(received_at_us),
         }
     }
 }
@@ -40,8 +66,13 @@ impl SessionFrame {
 pub enum SessionFailure {
     /// Transient transport failure: drop this socket, reconnect with backoff.
     Reconnect(anyhow::Error),
-    /// The exchange sent data that could not be decoded.
-    Decode(anyhow::Error),
+    /// The exchange sent data that could not be decoded. The raw payload is
+    /// retained when the adapter reached the payload bytes.
+    Decode {
+        error: anyhow::Error,
+        frame: Option<RawFrame>,
+        received_at_us: i64,
+    },
     /// A decoded frame violated the exchange protocol (sequence gap, server error).
     Protocol(anyhow::Error),
     /// Configuration or authentication failure: retrying cannot help.
@@ -117,6 +148,8 @@ pub struct WorkerConfig {
     /// Shared across every worker so the process never exceeds the configured
     /// number of simultaneous websocket handshakes.
     pub connect_permits: Arc<Semaphore>,
+    /// Raw-frame journal shared by every source worker.
+    pub journal: Option<JournalHandle>,
 }
 
 impl WorkerConfig {
@@ -130,6 +163,7 @@ impl WorkerConfig {
             reconnect_base_backoff: Duration::from_millis(500),
             reconnect_max_backoff: Duration::from_secs(30),
             connect_permits: Arc::new(Semaphore::new(settings.connect_concurrency.max(1))),
+            journal: None,
         }
     }
 }
@@ -203,9 +237,13 @@ pub async fn run_worker(
                         .await;
                     break;
                 }
-                SessionFailure::Reconnect(error)
-                | SessionFailure::Decode(error)
-                | SessionFailure::Protocol(error) => {
+                SessionFailure::Reconnect(error) | SessionFailure::Protocol(error) => {
+                    warn!(%source, error = %format!("{error:#}"), "connect failed");
+                    status.last_error = Some(truncate_error(&error));
+                    status.connected = false;
+                    let _ = events.send(WorkerEvent::Status(status.clone())).await;
+                }
+                SessionFailure::Decode { error, .. } => {
                     warn!(%source, error = %format!("{error:#}"), "connect failed");
                     status.last_error = Some(truncate_error(&error));
                     status.connected = false;
@@ -391,6 +429,35 @@ pub async fn run_worker(
                             status.last_frame_us = now_us().ok();
                             idle_deadline = Instant::now() + config.idle_timeout;
                             update_latency(&mut status, &frame.events);
+                            if let Some(journal) = config.journal.as_ref()
+                                && let Some(raw) = frame.raw.take()
+                            {
+                                let received_at_us = frame.received_at_us.unwrap_or_else(|| {
+                                    now_us().unwrap_or(0)
+                                });
+                                if let Err(error) = journal.record(
+                                    source,
+                                    connection_epoch,
+                                    receive_seq,
+                                    received_at_us,
+                                    raw,
+                                    frame.decode.clone(),
+                                ) {
+                                    let message = format!(
+                                        "raw-frame journal rejected a frame: {error:#}"
+                                    );
+                                    warn!(%source, error = %message, "journal write failed");
+                                    status.last_error = Some(truncate_error(&error));
+                                    let _ = events
+                                        .send(WorkerEvent::Fatal {
+                                            source,
+                                            error: message,
+                                        })
+                                        .await;
+                                    should_stop = true;
+                                    break;
+                                }
+                            }
                             if !frame.events.is_empty()
                                 && events
                                     .send(WorkerEvent::Events {
@@ -414,10 +481,49 @@ pub async fn run_worker(
                                     }).await;
                                     should_stop = true;
                                 }
-                                SessionFailure::Decode(error) => {
+                                SessionFailure::Decode {
+                                    error,
+                                    frame,
+                                    received_at_us,
+                                } => {
                                     warn!(%source, error = %format!("{error:#}"), "websocket decode failed");
+                                    // The frame was read; advance the receive
+                                    // fence before decoding hid it so recovery
+                                    // ordering and the journal stay monotonic.
+                                    receive_seq = receive_seq.saturating_add(1);
+                                    status.messages = status.messages.saturating_add(1);
                                     status.decode_errors = status.decode_errors.saturating_add(1);
                                     status.last_error = Some(truncate_error(&error));
+                                    if let Some(journal) = config.journal.as_ref()
+                                        && let Some(raw) = frame
+                                    {
+                                        status.bytes_received = status
+                                            .bytes_received
+                                            .saturating_add(raw.payload.len() as u64);
+                                        let category = decode_error_category(&error);
+                                        if let Err(journal_error) = journal.record(
+                                            source,
+                                            connection_epoch,
+                                            receive_seq,
+                                            received_at_us,
+                                            raw,
+                                            crate::journal::DecodeOutcome::rejected(category),
+                                        ) {
+                                            let message = format!(
+                                                "raw-frame journal rejected a frame: {journal_error:#}"
+                                            );
+                                            warn!(%source, error = %message, "journal write failed");
+                                            status.last_error = Some(truncate_error(&journal_error));
+                                            let _ = events
+                                                .send(WorkerEvent::Fatal {
+                                                    source,
+                                                    error: message,
+                                                })
+                                                .await;
+                                            should_stop = true;
+                                            break;
+                                        }
+                                    }
                                     must_reconnect = true;
                                 }
                                 SessionFailure::Protocol(error) => {
@@ -721,9 +827,21 @@ fn update_latency(status: &mut SourceStatus, events: &[ExchangeEvent]) {
 fn failure_message(failure: &SessionFailure) -> String {
     match failure {
         SessionFailure::Reconnect(error)
-        | SessionFailure::Decode(error)
         | SessionFailure::Protocol(error)
         | SessionFailure::Fatal(error) => truncate_error(error),
+        SessionFailure::Decode { error, .. } => truncate_error(error),
+    }
+}
+
+/// Stable classification for a rejected frame, recorded in the journal.
+fn decode_error_category(error: &anyhow::Error) -> &'static str {
+    if error
+        .chain()
+        .any(|cause| cause.downcast_ref::<serde_json::Error>().is_some())
+    {
+        "invalid_json"
+    } else {
+        "invalid_payload"
     }
 }
 

@@ -45,7 +45,7 @@ impl AlignedSbeWriter<BufWriter<File>> {
     /// Create an aligned [`AlignedSbeWriter`] at a new path.
     ///
     /// Creation is exclusive: an existing file is an error. Callers that
-    /// explicitly intend to replace an artifact use [`Self::create`].
+    /// replace an artifact with [`Self::create`].
     pub fn create_new(path: impl AsRef<Path>, chunk: usize) -> anyhow::Result<Self> {
         validate_chunk(chunk)?;
         let file = OpenOptions::new().write(true).create_new(true).open(path)?;

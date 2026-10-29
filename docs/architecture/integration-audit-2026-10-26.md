@@ -41,7 +41,7 @@ The active coordinator path uses its own `derive_shard_count` and enforces shard
 
 ### P1 — The generated test inventory was stale and overcounted executable coverage
 
-After regeneration, the static inventory records 159 test-attributed function declarations. Of these, 15 occur in the three unrooted source files (`capacity.rs`, `catalog.rs`, `persistence.rs`) and are explicitly marked `NOT COMPILED`. The remaining 144 declarations are reachable through a crate root or an integration-test file, but this does not prove that they compile or pass. The README and dated verification record must be reconciled only after the exact source tree builds and its tests are run.
+After regeneration, the static inventory records 159 test-attributed function declarations. Of these, 15 occur in the three unrooted source files (`capacity.rs`, `catalog.rs`, `persistence.rs`) and are marked `NOT COMPILED`. The remaining 144 declarations are reachable through a crate root or an integration-test file, but this does not prove that they compile or pass. The README and dated verification record must be reconciled only after the exact source tree builds and its tests are run.
 
 ### P1 — Output lifecycle remains unsafe for unattended existing paths
 
@@ -59,7 +59,7 @@ After regeneration, the static inventory records 159 test-attributed function de
 | Source root traversal | 38 of 41 Rust files reachable; 3 unrooted | The unrooted files are `capacity.rs`, `catalog.rs`, `persistence.rs`. The build script is counted as a separate crate root. |
 | Architecture Mermaid structural checker | 9 diagrams; no structural errors | This validates node/edge structure, not full Mermaid grammar. |
 | Architecture checker unit suite | 7 passed | Includes regression tests for declaring modules inactive rather than counting their tests as compiled. |
-| `scripts/check_architecture.py --check` | **Fails intentionally** on integration mismatches above | It must not produce a green architecture gate for this snapshot. |
+| `scripts/check_architecture.py --check` | **Fails** on integration mismatches above | It must not produce a green architecture gate for this snapshot. |
 | `cargo fmt`, Clippy, Rust tests, release build | Not run | `cargo` and `rustc` are unavailable in this review environment. |
 | Pinned Mermaid parser action | Not run | Requires GitHub Actions; a local structural check is not a substitute. |
 

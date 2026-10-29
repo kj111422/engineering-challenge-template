@@ -304,7 +304,7 @@ impl CollectorCore {
     }
 
     /// Preview the exact shard loads that [`Self::apply_discovery`] would
-    /// produce. This is deliberately side-effect free so the coordinator can
+    /// produce. This has no side effects so the coordinator can
     /// reject an over-capacity discovery round before it retires books,
     /// dispatches controls, emits snapshots, or persists a checkpoint.
     pub fn projected_shard_loads(&self, markets: &[MarketInfo]) -> anyhow::Result<Vec<usize>> {
@@ -1468,7 +1468,7 @@ impl CollectorCore {
     }
 
     /// Choose a replacement source with a book at least as new as the last
-    /// emitted state. If no replacement is ready, explicitly request recovery
+    /// emitted state. If no replacement is ready, request recovery
     /// from every healthy replica and wait for a fresh exchange snapshot.
     fn reseat(&mut self, native: &str, now_us: i64) -> Vec<OutputMessage> {
         let statuses = &self.statuses;

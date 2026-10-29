@@ -365,6 +365,52 @@ impl NetworkSettings {
     }
 }
 
+/// Flush and sync policy for the raw-frame journal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum JournalSyncMode {
+    /// Flush and fsync on the configured intervals and at finalization.
+    #[default]
+    Interval,
+    /// Flush and fsync every record.
+    Always,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct JournalSettings {
+    /// Root directory for raw-frame runs. `None` disables the journal.
+    pub directory: Option<PathBuf>,
+    /// Records buffered between session workers and the journal writer.
+    pub queue_capacity: usize,
+    /// Maximum wait for queue space before the run fails.
+    pub enqueue_timeout_ms: u64,
+    /// Maximum time records may remain in the process buffer.
+    pub flush_interval_ms: u64,
+    /// Maximum time between storage syncs in interval mode.
+    pub sync_interval_ms: u64,
+    /// Rotate after this many record bytes (0 disables size rotation).
+    pub segment_max_bytes: u64,
+    /// Rotate after this many seconds (0 disables time rotation).
+    pub segment_max_secs: u64,
+    pub sync_mode: JournalSyncMode,
+}
+
+impl Default for JournalSettings {
+    fn default() -> Self {
+        Self {
+            directory: None,
+            queue_capacity: 4096,
+            enqueue_timeout_ms: 250,
+            flush_interval_ms: 1000,
+            sync_interval_ms: 5000,
+            segment_max_bytes: 256 << 20,
+            segment_max_secs: 300,
+            sync_mode: JournalSyncMode::Interval,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct FileConfig {
@@ -375,6 +421,7 @@ pub struct FileConfig {
     pub network: NetworkSettings,
     pub output: OutputSettings,
     pub metrics: MetricsSettings,
+    pub journal: JournalSettings,
 }
 
 #[derive(Debug, Clone)]
@@ -386,6 +433,7 @@ pub struct Settings {
     pub network: NetworkSettings,
     pub output: OutputSettings,
     pub metrics: MetricsSettings,
+    pub journal: JournalSettings,
 }
 
 impl Settings {
@@ -406,6 +454,7 @@ impl Settings {
             network: file.network,
             output: file.output,
             metrics: file.metrics,
+            journal: file.journal,
         }
     }
 
@@ -427,6 +476,7 @@ impl Settings {
             network: file.network,
             output: file.output,
             metrics: file.metrics,
+            journal: file.journal,
         };
         settings.apply_environment()?;
         settings.validate()?;
@@ -457,6 +507,9 @@ impl Settings {
         if let Ok(value) = std::env::var("COLLECTOR_OUTPUT") {
             self.output.path = value;
         }
+        if let Ok(value) = std::env::var("COLLECTOR_JOURNAL_DIR") {
+            self.journal.directory = Some(PathBuf::from(value));
+        }
         if let Ok(value) = std::env::var("COLLECTOR_METRICS_LISTEN") {
             self.metrics.listen = Some(
                 value
@@ -465,6 +518,24 @@ impl Settings {
             );
         }
         Ok(())
+    }
+
+    /// SHA-256 of the capture-affecting configuration.
+    ///
+    /// The digest covers the exchange, collector, network, output, and journal
+    /// sections. Credentials are excluded so the value can be published in a
+    /// journal manifest without exposing secrets.
+    pub fn capture_config_sha256(&self) -> anyhow::Result<String> {
+        let canonical = serde_json::json!({
+            "exchange": self.exchange,
+            "collector": self.collector,
+            "network": self.network,
+            "output": self.output,
+            "journal": self.journal,
+        });
+        let bytes = serde_json::to_vec(&canonical)
+            .context("serializing capture configuration for hashing")?;
+        Ok(crate::util::sha256_hex(&bytes))
     }
 
     pub fn validate(&self) -> anyhow::Result<()> {
@@ -558,6 +629,32 @@ impl Settings {
             self.collector.writer_queue >= 128,
             "writer_queue must be >= 128"
         );
+        if let Some(directory) = self.journal.directory.as_ref() {
+            anyhow::ensure!(
+                !directory.as_os_str().is_empty(),
+                "journal.directory must not be empty"
+            );
+            anyhow::ensure!(
+                self.journal.queue_capacity >= 1,
+                "journal.queue_capacity must be >= 1"
+            );
+            anyhow::ensure!(
+                self.journal.enqueue_timeout_ms >= 1,
+                "journal.enqueue_timeout_ms must be >= 1"
+            );
+            anyhow::ensure!(
+                self.journal.flush_interval_ms >= 1,
+                "journal.flush_interval_ms must be >= 1"
+            );
+            anyhow::ensure!(
+                self.journal.sync_interval_ms >= 1,
+                "journal.sync_interval_ms must be >= 1"
+            );
+            anyhow::ensure!(
+                self.journal.segment_max_bytes == 0 || self.journal.segment_max_bytes >= 4096,
+                "journal.segment_max_bytes must be zero or at least 4096"
+            );
+        }
         anyhow::ensure!(
             self.collector.flush_interval_secs >= 1,
             "flush_interval_secs must be >= 1"
@@ -919,6 +1016,22 @@ fn same_existing_file(_left: &Path, _right: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_fingerprint_tracks_capture_settings_not_credentials() {
+        let mut settings = Settings::for_exchange(ExchangeKind::Polymarket);
+        let first = settings.capture_config_sha256().expect("fingerprint");
+        settings.kalshi.key_id = "not-part-of-the-fingerprint".to_owned();
+        assert_eq!(
+            first,
+            settings.capture_config_sha256().expect("fingerprint")
+        );
+        settings.journal.queue_capacity = settings.journal.queue_capacity.saturating_add(1);
+        assert_ne!(
+            first,
+            settings.capture_config_sha256().expect("fingerprint")
+        );
+    }
 
     #[test]
     fn kalshi_defaults_to_production() {

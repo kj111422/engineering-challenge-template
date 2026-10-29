@@ -3,7 +3,7 @@
 //! The plan is computed before any source worker starts. It converts the
 //! selected venue records and outcome symbols into the resources the run will
 //! use and rejects a configuration that exceeds a declared ceiling. The
-//! estimates are deliberately conservative fixed costs, recorded in
+//! estimates are conservative fixed costs, recorded in
 //! `docs/operating-envelope.md`; they are planning bounds, not a substitute for
 //! the measured scale runs.
 

@@ -9,10 +9,11 @@ use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
 use engineering_challenge::{
-    config::Settings, coordinator, inspect, latency, replay, report::write_json_atomic, verify,
+    config::Settings, coordinator, inspect, journal, latency, replay, report::write_json_atomic,
+    verify,
 };
 
-use crate::cli::{Cli, Command};
+use crate::cli::{Cli, Command, JournalCommand};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -30,6 +31,16 @@ async fn main() -> anyhow::Result<()> {
                 report.final_symbols,
                 report.shutdown_reason
             );
+            if let Some(journal) = report.journal.as_ref() {
+                eprintln!(
+                    "journal {:?}: {} records in {} segment(s), {} bytes at {}",
+                    journal.state,
+                    journal.counters.finalized,
+                    journal.counters.segments,
+                    journal.counters.bytes,
+                    journal.run_directory
+                );
+            }
             Ok(())
         }
         Command::Replay { input } => {
@@ -99,6 +110,18 @@ async fn main() -> anyhow::Result<()> {
             emit_json(&result)?;
             Ok(())
         }
+        Command::Journal { command } => match command {
+            JournalCommand::Verify { run } => {
+                let verification = journal::verify_run(&run)?;
+                emit_json(&verification)?;
+                anyhow::ensure!(
+                    verification.complete,
+                    "journal verification failed: {}",
+                    verification.errors.join("; ")
+                );
+                Ok(())
+            }
+        },
     }
 }
 

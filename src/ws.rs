@@ -21,6 +21,8 @@ pub type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 #[derive(Debug)]
 pub enum WsPayload {
     Text(String),
+    /// Binary data frame, preserved as received.
+    Binary(Vec<u8>),
     /// Control/heartbeat frame; the connection is still alive.
     Idle,
 }
@@ -81,7 +83,7 @@ impl ConnectOptions {
 
 /// Open a websocket, optionally adding handshake headers.
 ///
-/// The TCP connection is established explicitly so the collector can apply
+/// The TCP connection is established before the upgrade so the collector can apply
 /// `TCP_NODELAY`, bind a source address, and race several full handshakes.
 /// Racing covers TLS and the websocket upgrade as well as the TCP handshake,
 /// so a connection is only selected after it is usable.
@@ -244,11 +246,7 @@ pub async fn next_payload(stream: &mut WsStream) -> anyhow::Result<WsPayload> {
         let message = stream.next().await.context("websocket stream ended")??;
         match message {
             Message::Text(text) => return Ok(WsPayload::Text(text.to_string())),
-            Message::Binary(bytes) => {
-                let text = String::from_utf8(bytes.to_vec())
-                    .context("binary websocket frame was not UTF-8 JSON")?;
-                return Ok(WsPayload::Text(text));
-            }
+            Message::Binary(bytes) => return Ok(WsPayload::Binary(bytes.to_vec())),
             Message::Ping(payload) => {
                 stream.send(Message::Pong(payload)).await?;
                 return Ok(WsPayload::Idle);
@@ -362,11 +360,11 @@ mod tests {
         }
         match next_payload(&mut stream).await.unwrap() {
             WsPayload::Text(text) => assert_eq!(text, "first"),
-            WsPayload::Idle => panic!("expected a text frame"),
+            WsPayload::Binary(_) | WsPayload::Idle => panic!("expected a text frame"),
         }
         match next_payload(&mut stream).await.unwrap() {
             WsPayload::Text(text) => assert_eq!(text, "second"),
-            WsPayload::Idle => panic!("expected a text frame"),
+            WsPayload::Binary(_) | WsPayload::Idle => panic!("expected a text frame"),
         }
         server.await.unwrap();
     }

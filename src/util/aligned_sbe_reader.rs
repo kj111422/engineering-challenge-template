@@ -369,7 +369,7 @@ fn detect_chunk_size_source<T: AlignedSbeSchema, S: ChunkSource>(
 
     anyhow::bail!(
         "could not auto-detect chunk size for {} bytes of SBE data within {} MiB; \
-         specify --read-chunk-size explicitly",
+         use --read-chunk-size for a non-default chunk size",
         len,
         MAX_AUTO_CHUNK_SIZE >> 20
     )

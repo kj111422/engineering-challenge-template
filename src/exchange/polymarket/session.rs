@@ -14,6 +14,7 @@ use serde_json::json;
 use crate::{
     config::{NetworkSettings, PolymarketSettings},
     exchange::polymarket::codec::decode_polymarket_message,
+    journal::{DecodeOutcome, FrameKind, RawFrame},
     model::SourceId,
     session::{MarketDataSession, SessionFactory, SessionFailure, SessionFrame},
     time::now_us,
@@ -181,35 +182,97 @@ impl MarketDataSession for PolymarketSession {
         let payload = ws::next_payload(self.stream_mut()?)
             .await
             .map_err(SessionFailure::Reconnect)?;
-        let text = match payload {
+        let received_at_us = now_us().unwrap_or(0);
+        let (text, kind) = match payload {
             WsPayload::Idle => return Ok(SessionFrame::idle(0)),
-            WsPayload::Text(text) => text,
+            WsPayload::Text(text) => (text, FrameKind::Text),
+            WsPayload::Binary(bytes) => match String::from_utf8(bytes.clone()) {
+                Ok(text) => (text, FrameKind::Binary),
+                Err(error) => {
+                    return Err(SessionFailure::Decode {
+                        error: anyhow::Error::new(error)
+                            .context("Polymarket binary frame was not UTF-8 JSON"),
+                        frame: Some(RawFrame {
+                            kind: FrameKind::Binary,
+                            payload: bytes,
+                        }),
+                        received_at_us,
+                    });
+                }
+            },
         };
         let bytes = text.len();
         let control = text.trim();
         if control.is_empty() {
-            return Ok(SessionFrame::idle(bytes));
+            return Ok(SessionFrame::data(
+                Vec::new(),
+                bytes,
+                RawFrame {
+                    kind,
+                    payload: text.into_bytes(),
+                },
+                DecodeOutcome::ignored("empty_frame"),
+                received_at_us,
+            ));
         }
         if control.eq_ignore_ascii_case("PING") {
             self.pong_pending = true;
             self.flush_pending_pong().await?;
-            return Ok(SessionFrame::idle(bytes));
+            return Ok(SessionFrame::data(
+                Vec::new(),
+                bytes,
+                RawFrame {
+                    kind,
+                    payload: text.into_bytes(),
+                },
+                DecodeOutcome::ignored("control_frame"),
+                received_at_us,
+            ));
         }
         if control.eq_ignore_ascii_case("PONG") {
-            return Ok(SessionFrame::idle(bytes));
+            return Ok(SessionFrame::data(
+                Vec::new(),
+                bytes,
+                RawFrame {
+                    kind,
+                    payload: text.into_bytes(),
+                },
+                DecodeOutcome::ignored("control_frame"),
+                received_at_us,
+            ));
         }
-        let received_at_us = now_us().unwrap_or(0);
-        let events = decode_polymarket_message(&text, received_at_us).map_err(|error| {
-            let preview: String = text.chars().take(160).collect();
-            SessionFailure::Decode(error.context(format!(
-                "decoding Polymarket frame ({} bytes, preview={preview:?})",
-                text.len()
-            )))
-        })?;
-        if events.is_empty() {
-            Ok(SessionFrame::idle(bytes))
-        } else {
-            Ok(SessionFrame { events, bytes })
+        match decode_polymarket_message(&text, received_at_us) {
+            Ok(events) => {
+                let decode = if events.is_empty() {
+                    DecodeOutcome::ignored("no_events")
+                } else {
+                    DecodeOutcome::decoded(events.len())
+                };
+                Ok(SessionFrame::data(
+                    events,
+                    bytes,
+                    RawFrame {
+                        kind,
+                        payload: text.into_bytes(),
+                    },
+                    decode,
+                    received_at_us,
+                ))
+            }
+            Err(error) => {
+                let preview: String = text.chars().take(160).collect();
+                Err(SessionFailure::Decode {
+                    error: error.context(format!(
+                        "decoding Polymarket frame ({} bytes, preview={preview:?})",
+                        text.len()
+                    )),
+                    frame: Some(RawFrame {
+                        kind,
+                        payload: text.into_bytes(),
+                    }),
+                    received_at_us,
+                })
+            }
         }
     }
 

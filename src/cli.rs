@@ -117,6 +117,10 @@ pub struct Cli {
     #[arg(long, global = true, value_name = "FILE")]
     pub report: Option<PathBuf>,
 
+    /// Root directory for the raw-frame journal. Omit to disable recording.
+    #[arg(long = "journal-dir", global = true, value_name = "DIR")]
+    pub journal_dir: Option<PathBuf>,
+
     #[arg(long, global = true)]
     pub snapshot_interval_secs: Option<u64>,
 
@@ -181,6 +185,21 @@ pub enum Command {
         /// Optional path for the JSON discovery result.
         #[arg(long, value_name = "FILE")]
         out: Option<PathBuf>,
+    },
+    /// Inspect a raw-frame journal.
+    Journal {
+        #[command(subcommand)]
+        command: JournalCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum JournalCommand {
+    /// Verify a run directory against its manifest, segments, and checksums.
+    Verify {
+        /// Journal run directory containing `manifest.json`.
+        #[arg(value_name = "RUN")]
+        run: PathBuf,
     },
 }
 
@@ -257,6 +276,9 @@ impl Cli {
         }
         if let Some(path) = &self.report {
             settings.output.report_path = Some(path.clone());
+        }
+        if let Some(path) = &self.journal_dir {
+            settings.journal.directory = Some(path.clone());
         }
         if let Some(seconds) = self.snapshot_interval_secs {
             settings.collector.snapshot_interval_secs = seconds;

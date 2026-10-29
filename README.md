@@ -45,6 +45,9 @@ the evidence required before live order submission is enabled.
 - Provides deterministic JSONL replay, an offline SBE inspector, and a `verify`
   command that proves a capture's deltas reconstruct the snapshots that follow
   them.
+- Optionally records every received public data frame, including decode rejects,
+  in a separate checksummed raw-frame journal with per-source epochs and receive
+  times. The SBE schema and output contract are unchanged.
 
 ## Build and test
 
@@ -58,14 +61,21 @@ cargo test --doc --locked
 cargo build --release --locked
 ```
 
-The most recent local offline run has **185 passing tests and 3 ignored
-opt-in tests**: 175 library tests, 8 mock-exchange end-to-end tests, and 2
-replay integration tests. The ignored tests are one parameterized scale
+The offline run on `polymarket-continuity-failure` at commit
+`13bc7e0dde5afc36eb350434eb5332c5abb23783` has **205 passing tests and 3
+ignored opt-in tests**: 195 library tests, 8 mock-exchange end-to-end tests,
+and 2 replay integration tests. The ignored tests are one parameterized scale
 scenario (run separately at 1k/5k/25k/100k symbols) and two public-feed live
-tests. The branch's commands, counts, and CI/live run links are recorded in
-[`docs/correctness-audit-2026-10-26.md`](docs/correctness-audit-2026-10-26.md);
-the submitted baseline's 127-test run is recorded in
-[`docs/final-verification-2026-10-25.md`](docs/final-verification-2026-10-25.md).
+tests. Rust CI run
+[40522906788](https://github.com/kj111422/engineering-challenge-template/actions/runs/40522906788)
+records the same counts, and architecture validation run
+[40522907015](https://github.com/kj111422/engineering-challenge-template/actions/runs/40522907015)
+passed on that commit. The commands, counts, and limits are recorded in
+[`docs/verification-2026-10-30-continuity.md`](docs/verification-2026-10-30-continuity.md).
+The earlier [`docs/correctness-audit-2026-10-26.md`](docs/correctness-audit-2026-10-26.md)
+and the submitted baseline's 127-test run in
+[`docs/final-verification-2026-10-25.md`](docs/final-verification-2026-10-25.md)
+remain the evidence for the commits they describe.
 
 The offline suite covers decoding, fixed-point arithmetic, order books,
 sharding/failover/snapshot scheduling, maintenance clock resets, malformed
@@ -165,6 +175,38 @@ policy (a missing value is unconfirmed, not tradable; set
 `polymarket.require_accepting_orders = false` to keep unknown records while
 retaining the other filters).
 
+## Raw-frame journal
+
+Set `journal.directory` (or `--journal-dir`, or `COLLECTOR_JOURNAL_DIR`) to keep
+the exact payload and receive metadata for every public data frame:
+
+```bash
+cargo run --release -- --exchange polymarket --max-markets 20 \
+  --output captures/polymarket.sbe \
+  --journal-dir captures/journal \
+  collect
+```
+
+Each run writes a new directory containing an atomically updated manifest and
+append-only segments. Records preserve the transport frame kind, source shard
+and replica, connection epoch, per-source receive sequence, receive time,
+decode result, and exact bytes. Rejected frames are retained with a stable
+category. Finalized segments are checksummed and listed in the manifest; an
+interrupted run leaves a `.partial` segment and an open manifest.
+
+Verify a completed run with:
+
+```bash
+cargo run --release -- journal verify captures/journal/<run-id>
+```
+
+The command checks segment headers, footers, record checksums, counts,
+provenance, per-source ordering, unlisted files, and partial files, then exits
+non-zero unless the run is complete. Queue saturation, write/sync failures, and
+finalization timeouts fail the run instead of dropping frames. Details and the
+on-disk format are in
+[`docs/raw-frame-journal.md`](docs/raw-frame-journal.md).
+
 ## Commands
 
 ```text
@@ -172,6 +214,7 @@ collect    Live collection (default)
 replay     Replay a normalized JSONL fixture through the same core
 inspect    Decode an aligned SBE capture and print a JSON summary
 verify     Rebuild each book from deltas and check it against every snapshot
+journal    Verify a raw-frame journal run
 latency    Measure discovery RTT, exchange-to-local timestamp latency, and
            cross-connection arrival skew
 discover   Print the current live market set as JSON
@@ -180,8 +223,8 @@ discover   Print the current live market set as JSON
 Useful global flags include `--config`, `--output`, `--chunk-size`, `--shards`,
 `--replicas`, `--snapshot-interval-secs`, `--discovery-interval-secs`,
 `--max-markets`, `--duration-secs`, `--metrics-listen`, `--metadata`,
-`--report`, and `--log-json`. Transport flags apply to every websocket
-connection: `--no-tcp-nodelay`, `--source-ip`, `--source-port`, and
+`--report`, `--journal-dir`, and `--log-json`. Transport flags apply to every
+websocket connection: `--no-tcp-nodelay`, `--source-ip`, `--source-port`, and
 `--connect-race` (see [Latency experiments](#latency-experiments-extension-4)).
 
 Examples:
@@ -579,6 +622,14 @@ settings:
 | `collector.readiness_min_anchored_fraction` | 0.99 | Minimum anchored-symbol fraction for `/readyz` |
 | `collector.readiness_max_catalog_age_secs` | 3600 | Maximum catalog age for `/readyz` |
 | `collector.readiness_max_stale_secs` | 120 | Maximum time since a book's last valid update for `/readyz` |
+| `journal.directory` | none | Root for raw-frame runs; unset disables the journal |
+| `journal.queue_capacity` | 4096 | Bounded queue between source workers and the journal writer |
+| `journal.enqueue_timeout_ms` | 250 | Maximum wait for queue space before the run fails |
+| `journal.flush_interval_ms` | 1000 | Bound on records held in the process buffer |
+| `journal.sync_interval_ms` | 5000 | Interval between storage syncs in `interval` mode |
+| `journal.segment_max_bytes` | 268435456 | Size rotation trigger; `0` disables |
+| `journal.segment_max_secs` | 300 | Time rotation trigger; `0` disables |
+| `journal.sync_mode` | `interval` | `interval` or `always` (fsync every record) |
 | `network.tcp_nodelay` | true | `TCP_NODELAY` on every websocket socket |
 | `network.source_ip` | none | Local IP to bind before connecting |
 | `network.source_port` | none | Base local source port; connection `shard*256+replica` binds `base + ordinal`; not combinable with `connect_race > 1` |
@@ -622,6 +673,7 @@ src/
       session.rs              public CLOB websocket session, snapshot-driven recovery
   fixed.rs                    fixed-point decimal (1e6) arithmetic and parsing
   inspect.rs                  aligned SBE inspection CLI
+  journal.rs                  checksummed raw-frame journal: segments, manifest, verification
   latency.rs                  measured latency, connection setup, cross-replica skew
   lib.rs                      crate root, public API, test modules
   main.rs                     binary entry, command dispatch
@@ -646,7 +698,7 @@ src/
   ws.rs                       websocket transport: TCP_NODELAY, source binding, racing
 fixtures/                     deterministic replay fixture (sample_replay.jsonl)
 tests/
-  e2e_mock_exchange.rs        loopback Gamma+CLOB mock exchange, 8 scenarios
+  e2e_mock_exchange.rs        loopback Gamma+CLOB mock exchange, 9 scenarios
   live_polymarket.rs          opt-in live Polymarket public feed tests
   replay_fixture.rs           deterministic fixture replay + verify integration
 docs/
@@ -657,6 +709,7 @@ docs/
   latency.md                  Extension 4 methodology, caveats, raw data
   metric-runbook.md           alert signals and first diagnostic step per metric
   operating-envelope.md       planning bounds, derived shard count, defaults
+  raw-frame-journal.md        raw-frame journal format, durability, verification
   replay-format.md            JSONL replay record schema
   requirement-test-matrix.md  requirement-to-test traceability
 deploy/                       deployment unit and operational notes
@@ -684,7 +737,7 @@ scripts/
   remains blocked without authorized credentials; Polymarket is used only as
   the permitted public fallback.
 - Kalshi endpoint reachability depends on the environment. The adapter
-  supports production (the default) and demo; switch explicitly to demo for
+  supports production (the default) and demo; select demo mode for
   simulated validation.
 - Polymarket is a public, best-effort feed with no sequence numbers. Protocol
   faults recover by reconnect-and-resubscribe; quiet-symbol probes cycle the

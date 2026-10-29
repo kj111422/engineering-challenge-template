@@ -7,7 +7,7 @@ submission.
 
 | Path group | Origin and review expectation |
 |---|---|
-| `sbe_schemas/` | Supplied challenge schema; retain it unchanged unless the challenge explicitly requires an update. |
+| `sbe_schemas/` | Supplied challenge schema; retain it unchanged unless the challenge requires an update. |
 | `src/util/build.rs`, generated SBE bridge | Generated from the supplied schema through the configured build dependency; review generated output as generated material, not original protocol design. |
 | `src/util/{aligned_sbe_reader,aligned_sbe_writer}.rs` | Challenge-compatible helper implementation; changes require template-reader compatibility tests. |
 | `src/` excluding generated/schema helpers | Project implementation. Nontrivial changes require an invariant, a focused test, and a Git commit explaining the decision. |

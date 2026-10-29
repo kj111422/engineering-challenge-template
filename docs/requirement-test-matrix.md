@@ -47,7 +47,7 @@ this branch's results are recorded in
 | Subscription scale is tested beyond discovery | E2E `mock_subscription_scale_across_shards` | 1,000 symbols, 4 shards, 2 replicas, 8 loopback WebSockets, 250 symbols per socket, 2,000 subscription entries. It does not establish live venue limits or 548,942 simultaneous subscriptions. |
 | Scale envelope measured at 1k/5k/25k/100k symbols | E2E `opt_in_scale_run` (ignored; run with `SCALE_SYMBOLS=N`) | Measured connect+subscribe, anchor, settle times, RSS, output bytes. 100k: 20 shards, 40 connections, 200k subscriptions, 5.0s total, 696 MB RSS. Does not establish live venue limits or full-universe 548,942 tokens. |
 
-## Explicitly not claimed
+## Not claimed
 
 - **Kalshi live validation.** No authorized credentials were supplied. The
   signing, codec, discovery, and mock-session tests are not a live handshake.

@@ -89,3 +89,15 @@ fsync_interval_secs = 0
 
 [metrics]
 listen = "127.0.0.1:9090"
+
+[journal]
+# Uncomment to retain every received public data frame. Each run creates a new
+# subdirectory with a manifest and checksummed segments.
+# directory = "captures/kalshi-journal"
+queue_capacity = 4096
+enqueue_timeout_ms = 250
+flush_interval_ms = 1000
+sync_interval_ms = 5000
+segment_max_bytes = 268435456
+segment_max_secs = 300
+sync_mode = "interval"

@@ -517,7 +517,7 @@ impl MetricsRegistry {
         }
     }
 
-    /// Liveness is intentionally narrower than readiness: the process can
+    /// Liveness is narrower than readiness: the process can
     /// answer HTTP and make progress even when coverage is degraded.
     #[must_use]
     pub fn live_payload(&self) -> String {

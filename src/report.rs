@@ -142,6 +142,9 @@ pub struct RunReport {
     /// Rotation manifest when the run wrote multiple segments.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_manifest: Option<String>,
+    /// Final raw-frame journal state. Present when the journal was enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub journal: Option<crate::journal::JournalStatus>,
 }
 
 impl RunReport {
@@ -189,6 +192,7 @@ impl RunReport {
             persistence: None,
             coverage: None,
             output_manifest: None,
+            journal: None,
         }
     }
 

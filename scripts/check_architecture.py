@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check source/test inventory drift and architecture traceability without dependencies.
 
-Run from any working directory. --update intentionally rewrites generated inventory
+Run from any working directory. --update rewrites generated inventory
 files after a reviewed source/test change; --check is read-only and is used by CI.
 This is a structural/traceability gate, not a substitute for Mermaid's syntax parser.
 """
@@ -17,13 +17,14 @@ DOC = ROOT / "docs/architecture.md"
 SOURCE_INVENTORY = ROOT / "docs/architecture/source-inventory.md"
 TEST_INVENTORY = ROOT / "docs/architecture/test-inventory.md"
 
-# Every tracked Rust source module must have an explicitly reviewed responsibility.
+# Every tracked Rust source module must have an assigned responsibility.
 SOURCE_RESPONSIBILITIES = {
     "src/cli.rs": "clap command model and CLI-to-settings overrides",
     "src/config.rs": "configuration defaults, deserialization, and validation",
     "src/coordinator.rs": "startup, orchestration loop, discovery reconciliation, controls, shutdown",
     "src/fixed.rs": "fixed-point price/quantity parsing and checked arithmetic",
     "src/inspect.rs": "offline SBE capture inspection command",
+    "src/journal.rs": "raw-frame journal writer, segment/manifest format, verification, ordered reading",
     "src/latency.rs": "latency experiment orchestration and result output",
     "src/lib.rs": "library module exports and public entry points",
     "src/main.rs": "process entry point and collect/discover/replay/inspect/verify/latency dispatch",
@@ -76,6 +77,11 @@ REQUIRED_TESTS = {
     "shutdown_drains_saturated_queue_and_joins",
     "finish_failure_on_shutdown_is_reported",
     "negative_control_missing_update_is_detected_by_verify",
+    "payload_bytes_survive_write_and_read",
+    "checksum_mismatch_and_corrupt_manifest_fail_verification",
+    "queue_saturation_fails_instead_of_dropping",
+    "graceful_shutdown_finalizes_rotated_segments",
+    "journal_finalizes_and_verifies_on_graceful_shutdown",
 }
 
 # Anchors that make the main structural claims falsifiable against code.
@@ -83,6 +89,7 @@ REQUIRED_ANCHORS = {
     "src/main.rs": [
         "Command::Collect", "Command::Replay", "Command::Inspect",
         "Command::Verify", "Command::Latency", "Command::Discover",
+        "Command::Journal",
     ],
     "src/coordinator.rs": [
         "run_with_shutdown", "discover_with_retry", "process_worker_event",
@@ -112,6 +119,10 @@ REQUIRED_ANCHORS = {
     "src/exchange/polymarket/codec.rs": ["price_change", "unknown_event_types_are_counted_but_not_fatal"],
     "src/exchange/polymarket/session.rs": ["send_initial", "next_frame", "send_keepalive"],
     "src/verify.rs": ["pub fn run"],
+    "src/journal.rs": [
+        "pub struct JournalHandle", "pub fn verify_run", "pub fn read_records",
+        "struct Manifest", "struct SegmentFooter", "RunState::Finalized",
+    ],
     "src/util/build.rs": ["generate_str_to_out_dir", "GenerationConfig"],
 }
 
@@ -136,7 +147,7 @@ def collect_module_reachability(root: Path = ROOT) -> set[str]:
     """Return source files reachable through `mod foo;` from lib/bin crate roots.
 
     This is a conservative source-tree check, not a Rust parser. Inline modules
-    are intentionally not treated as separate files.
+    are not treated as separate files.
     """
     # `src/util/build.rs` is Cargo's configured build-script crate root (`build = ...` in Cargo.toml).
     roots = [root / "src/lib.rs", root / "src/main.rs", root / "src/util/build.rs"]

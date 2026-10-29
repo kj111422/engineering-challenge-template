@@ -66,7 +66,7 @@ The default `max_shards = 64` rejects this configuration at startup:
 error: derived shard count 110 exceeds max_shards 64
 ```
 
-**Two-replica full-universe collection is explicitly unsupported** with current defaults. To approach full-universe coverage, the following would need measured validation:
+**Two-replica full-universe collection is unsupported** with current defaults. To approach full-universe coverage, the following would need measured validation:
 
 1. Increase `max_shards` to ≥ 110 (requires coordinator scalability validation).
 2. Increase `max_total_connections` to ≥ 220 (requires FD limit validation).

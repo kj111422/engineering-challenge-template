@@ -339,7 +339,7 @@ groups:
 |--------|-------------|-------|
 | Global counters/gauges | O(1) | Fixed set |
 | Per-source metrics | O(shards × replicas) | Max 512 by default |
-| No per-symbol metrics | — | Intentionally avoided for scale |
+| No per-symbol metrics | — | Avoided for scale |
 
 Total metric count at max config (64 shards × 2 replicas = 128 sources): ~800 time series. Well within Prometheus default limits.
 

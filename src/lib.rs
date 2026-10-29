@@ -6,6 +6,7 @@ pub mod coordinator;
 pub mod exchange;
 pub mod fixed;
 pub mod inspect;
+pub mod journal;
 pub mod latency;
 pub mod metrics;
 pub mod model;

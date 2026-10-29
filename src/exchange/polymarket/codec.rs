@@ -462,7 +462,7 @@ mod tests {
 
     #[test]
     fn book_requires_both_mandatory_sides() {
-        // Both sides present: valid, including an explicitly empty side.
+        // Both sides present: valid, including an empty side.
         let events = decode_polymarket_message(
             r#"{"event_type":"book","asset_id":"1","bids":[{"price":"0.4","size":"10"}],"asks":[]}"#,
             NOW,

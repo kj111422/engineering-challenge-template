@@ -24,8 +24,9 @@ use crate::{
     capacity,
     catalog::Catalog,
     collector::{CollectorCore, CoreConfig},
-    config::{CatalogMode, ExchangeKind, Settings},
+    config::{CatalogMode, ExchangeKind, JournalSyncMode, Settings},
     exchange::{DiscoveryResult, DiscoveryStats, Exchange, KalshiExchange, PolymarketExchange},
+    journal::{JournalConfig, JournalHandle, JournalMeta, SyncMode},
     metrics::{CatalogHealth, MetricsRegistry, ReadinessPolicy, RuntimeStatus, run_server_on},
     model::{Control, MarketInfo, OutputMessage, SourceId},
     persistence::PersistenceHandle,
@@ -52,6 +53,38 @@ pub fn build_exchange(
             settings.network.clone(),
         )?)),
     }
+}
+
+/// Start the raw-frame journal when a directory is configured.
+///
+/// The manifest records the source commit injected at build time and a digest
+/// of the capture-affecting configuration. Credentials never enter either
+/// value.
+fn start_journal(settings: &Settings, venue: &str) -> anyhow::Result<Option<JournalHandle>> {
+    let Some(directory) = settings.journal.directory.clone() else {
+        return Ok(None);
+    };
+    let config = JournalConfig {
+        directory,
+        queue_capacity: settings.journal.queue_capacity,
+        enqueue_timeout: Duration::from_millis(settings.journal.enqueue_timeout_ms),
+        flush_interval: Duration::from_millis(settings.journal.flush_interval_ms),
+        sync_interval: Duration::from_millis(settings.journal.sync_interval_ms),
+        segment_max_bytes: settings.journal.segment_max_bytes,
+        segment_max_seconds: settings.journal.segment_max_secs,
+        sync_mode: match settings.journal.sync_mode {
+            JournalSyncMode::Interval => SyncMode::Interval,
+            JournalSyncMode::Always => SyncMode::Always,
+        },
+    };
+    let code_commit = option_env!("GIT_COMMIT")
+        .or(option_env!("GITHUB_SHA"))
+        .unwrap_or("unknown");
+    let config_sha256 = settings.capture_config_sha256()?;
+    let meta = JournalMeta::new(venue, code_commit, &config_sha256);
+    JournalHandle::start(config, meta)
+        .map(Some)
+        .context("starting raw-frame journal")
 }
 
 /// Readiness inputs owned by the coordinator loop.
@@ -86,7 +119,7 @@ fn catalog_mode_name(mode: CatalogMode) -> &'static str {
 ///
 /// A checkpoint is trusted only after its schema, counts, market fields, and
 /// content checksum verify. `warm` uses a fresh checkpoint and falls back to
-/// discovery; `require` demands a fresh checkpoint; `stale` explicitly accepts
+/// discovery; `require` demands a fresh checkpoint; `stale` accepts
 /// an old checkpoint so a total discovery outage does not block a restart.
 async fn bootstrap_markets(
     settings: &Settings,
@@ -320,9 +353,11 @@ where
         fatal_error: None,
     };
     let (metrics_shutdown, metrics_handle) = start_metrics(&settings, &registry).await?;
+    let journal = start_journal(&settings, exchange.name())?;
 
     let factory = Arc::clone(&exchange).session_factory();
-    let worker_config = WorkerConfig::from_settings(&settings.collector);
+    let mut worker_config = WorkerConfig::from_settings(&settings.collector);
+    worker_config.journal = journal.clone();
     let (worker_event_tx, mut worker_event_rx) = mpsc::channel::<WorkerEvent>(8192);
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
     let mut commands: BTreeMap<SourceId, mpsc::Sender<Control>> = BTreeMap::new();
@@ -365,6 +400,7 @@ where
         output = %settings.output.path,
         metadata = ?settings.output.metadata_path,
         report = ?settings.output.report_path,
+        journal = ?settings.journal.directory,
         capacity = %capacity.summary(),
         "collector started"
     );
@@ -451,7 +487,7 @@ where
                     let result_tx = discovery_tx.clone();
                     discovery_in_flight = true;
                     tokio::spawn(async move {
-                        // The release profile intentionally uses panic=abort,
+                        // The release profile uses panic=abort,
                         // so catch_unwind cannot provide recovery there. A
                         // panic is process-fatal and systemd restarts from a
                         // clean state; ordinary discovery failures use Result.
@@ -668,6 +704,18 @@ where
             stats_before_shutdown
         }
     };
+    // Workers have been aborted and no handle records after shutdown is
+    // requested. Finalizing here makes every accepted frame durable before the
+    // report claims a complete run.
+    let journal_status = match journal.as_ref() {
+        Some(handle) => {
+            if let Err(error) = handle.shutdown(send_timeout) {
+                shutdown_error.get_or_insert(error);
+            }
+            Some(handle.status())
+        }
+        None => None,
+    };
     stop_metrics(metrics_shutdown, metrics_handle).await;
     let core_stats = core.stats();
     let sources: Vec<_> = core.statuses().values().cloned().collect();
@@ -692,6 +740,7 @@ where
     report.discovery = runtime.discovery.clone();
     report.catalog = Some(bootstrap.catalog);
     report.coverage = Some(final_coverage);
+    report.journal = journal_status;
 
     // The final snapshot is persisted through the same latest-wins worker as
     // every intermediate one, then the worker is drained and joined. A warm

@@ -604,9 +604,9 @@ fn mean(samples: &[i64]) -> Option<i64> {
 fn failure_text(failure: &SessionFailure) -> String {
     match failure {
         SessionFailure::Reconnect(error)
-        | SessionFailure::Decode(error)
         | SessionFailure::Protocol(error)
         | SessionFailure::Fatal(error) => format!("{error:#}"),
+        SessionFailure::Decode { error, .. } => format!("{error:#}"),
     }
 }
 
