@@ -14,7 +14,7 @@ The current `main` commit has passing GitHub Actions runs for the Rust CI workfl
 - [CI — `9ab6cd5`](https://github.com/kj111422/engineering-challenge-template/actions/runs/40403111336)
 - [Architecture documentation — `9ab6cd5`](https://github.com/kj111422/engineering-challenge-template/actions/runs/40403111133)
 
-The `main` commit records 185 passing tests and 3 ignored opt-in tests. The continuity branch at `13bc7e0` records 205 passing and 3 ignored on the same suite ([Rust CI](https://github.com/kj111422/engineering-challenge-template/actions/runs/40522906788)). A green build establishes that the tested source compiles and the checked invariants hold; it does not prove that a long-running live feed is complete or that the application can trade safely.
+The `main` commit records 185 passing tests and 3 ignored opt-in tests. The continuity branch at `4362283` records 220 passing and 3 ignored on the same suite plus the journal scenarios ([Rust CI](https://github.com/kj111422/engineering-challenge-template/actions/runs/40956405372), [architecture](https://github.com/kj111422/engineering-challenge-template/actions/runs/40956405414)). A green build establishes that the tested source compiles and the checked invariants hold; it does not prove that a long-running live feed is complete or that the application can trade safely.
 
 ### Explicit current limitations
 

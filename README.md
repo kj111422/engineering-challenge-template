@@ -62,14 +62,14 @@ cargo build --release --locked
 ```
 
 The offline run on `polymarket-continuity-failure` at commit
-`13bc7e0dde5afc36eb350434eb5332c5abb23783` has **205 passing tests and 3
-ignored opt-in tests**: 195 library tests, 8 mock-exchange end-to-end tests,
+`4362283d2fc2bb813c8feef391c3f882db0f8222` has **220 passing tests and 3
+ignored opt-in tests**: 209 library tests, 9 mock-exchange end-to-end tests,
 and 2 replay integration tests. The ignored tests are one parameterized scale
 scenario (run separately at 1k/5k/25k/100k symbols) and two public-feed live
 tests. Rust CI run
-[40522906788](https://github.com/kj111422/engineering-challenge-template/actions/runs/40522906788)
+[40956405372](https://github.com/kj111422/engineering-challenge-template/actions/runs/40956405372)
 records the same counts, and architecture validation run
-[40522907015](https://github.com/kj111422/engineering-challenge-template/actions/runs/40522907015)
+[40956405414](https://github.com/kj111422/engineering-challenge-template/actions/runs/40956405414)
 passed on that commit. The commands, counts, and limits are recorded in
 [`docs/verification-2026-10-30-continuity.md`](docs/verification-2026-10-30-continuity.md).
 The earlier [`docs/correctness-audit-2026-10-26.md`](docs/correctness-audit-2026-10-26.md)

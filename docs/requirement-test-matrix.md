@@ -6,7 +6,7 @@ The public-network test is separate and ignored unless `RUN_LIVE_TESTS=1` is set
 Gate evidence for the submitted baseline is recorded in
 [`final-verification-2026-10-25.md`](final-verification-2026-10-25.md);
 this branch's results are recorded in
-[`correctness-audit-2026-10-26.md`](correctness-audit-2026-10-26.md).
+[`verification-2026-10-30-continuity.md`](verification-2026-10-30-continuity.md).
 
 ## Mandatory requirements
 
@@ -30,6 +30,7 @@ this branch's results are recorded in
 | E2 | Subscription monitoring; resubscribe quiet symbols; periodic reconnect | Idle timeout, stale probes (subscription cycling on the live Polymarket connection), probe-budget reconnect, periodic refresh with jitter | E2E `silent_subscription_is_detected_and_repaired` (takes about 12 s because the test sets `stale_probe_after_secs = 10`); `exchange::polymarket::session::tests::request_snapshot_cycles_the_subscription_on_the_live_connection`; `collector::state::tests::{shadow_snapshot_does_not_reset_active_probe_state,stale_shadow_snapshot_does_not_emit_after_source_loss}`; `exchange::kalshi::session::tests::*` | Implemented and offline-verified |
 | E3 | Generic encode/decode per exchange | `Exchange`, `MarketDataSession`, `SessionFactory`; Kalshi and Polymarket adapters behind the same core | Codec/discovery tests for both exchanges; replay fixture; E2E exercises the Polymarket discovery and session adapters through the coordinator | Implemented and offline-verified |
 | E4 | Latency experiments written in markdown | `src/latency.rs`, `src/ws.rs`, `docs/latency.md`; `TCP_NODELAY`, source binding, full-handshake racing, cross-connection skew | `latency::tests::*`, `ws::tests::{default_connect_options_disable_nagle_and_do_not_race,pinned_source_ports_are_derived_per_connection,ephemeral_ports_ignore_the_ordinal}`; four checked-in 60-second observations | Implemented; four single observations, not a benchmark or causal proof |
+| E5 | Versioned raw-frame journal with durability and verification | `src/journal.rs`; coordinator startup/finalization; `journal.directory`; `journal verify` | `journal::tests::*`, E2E `journal_finalizes_and_verifies_on_graceful_shutdown`, full existing SBE suite | Implemented and offline-verified; no live journal soak, retention policy, or physical disk-exhaustion test |
 
 ## Cross-cutting evidence
 
@@ -46,6 +47,7 @@ this branch's results are recorded in
 | `verify` handles retirement/empty books without false mismatches | `verify::tests::empty_snapshot_is_a_retirement_boundary_not_a_mismatch` | An empty snapshot is counted as a boundary, not compared level-by-level. It cannot prove a suppressed update that emptied a book was observed; only a later non-empty snapshot can. |
 | Subscription scale is tested beyond discovery | E2E `mock_subscription_scale_across_shards` | 1,000 symbols, 4 shards, 2 replicas, 8 loopback WebSockets, 250 symbols per socket, 2,000 subscription entries. It does not establish live venue limits or 548,942 simultaneous subscriptions. |
 | Scale envelope measured at 1k/5k/25k/100k symbols | E2E `opt_in_scale_run` (ignored; run with `SCALE_SYMBOLS=N`) | Measured connect+subscribe, anchor, settle times, RSS, output bytes. 100k: 20 shards, 40 connections, 200k subscriptions, 5.0s total, 696 MB RSS. Does not establish live venue limits or full-universe 548,942 tokens. |
+| Raw frames survive, verify, and fail without dropping | `journal::tests::*`; E2E `journal_finalizes_and_verifies_on_graceful_shutdown` | Exact payloads, checksums, manifest, per-source order, queue saturation, write/sync/finalize faults, truncation, corruption, and partial shutdown are covered offline. The SBE output is unchanged. It does not establish live journal throughput or retention behavior. |
 
 ## Not claimed
 
@@ -60,3 +62,7 @@ this branch's results are recorded in
 - **Extension 4 causality.** The four latency files are single 60-second
   observations. Source-port/CDN hashing and Nagle/delayed-ACK explanations are
   hypotheses, not isolated mechanisms.
+- **Live journal durability.** The raw-frame journal is verified by deterministic
+  fault injection and mock-exchange scenarios. It has not been soaked on a live
+  feed, filled a physical disk, or exercised a power-loss boundary; retention and
+  disk-watermark policies are not implemented.
