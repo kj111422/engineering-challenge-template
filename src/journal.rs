@@ -2622,11 +2622,23 @@ mod tests {
             RunState::Failed,
             "filesystem did not reach ENOSPC"
         );
-        let status = handle.status();
-        let reason = status.last_error.as_deref().unwrap_or_default();
+        let directory = run_directory(&root, "enospc-run");
+        let verification = verify_run(&directory).expect("verify ENOSPC run");
+        assert!(!verification.complete);
+        assert_eq!(verification.state, RunState::Failed);
+        // The in-memory `last_error` is overwritten by the later
+        // "journal writer stopped" symptom when a second record is attempted
+        // after the writer exits, so the persisted manifest failure is the
+        // stable record of the ENOSPC cause.
+        let manifest_failure = verification
+            .errors
+            .iter()
+            .find_map(|error| error.strip_prefix("run failure: "))
+            .unwrap_or_default();
         assert!(
-            reason.contains("No space left on device") || reason.contains("ENOSPC"),
-            "expected a real ENOSPC failure, got: {reason}"
+            manifest_failure.contains("No space left on device")
+                || manifest_failure.contains("ENOSPC"),
+            "expected a real ENOSPC manifest failure, got: {manifest_failure}"
         );
 
         // Free space only after the writer has latched the I/O error.
