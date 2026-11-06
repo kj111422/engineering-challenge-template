@@ -40,6 +40,17 @@ The framework is additive. Historical verification records, commit messages, fix
 
 The audit tooling is in [`scripts/assurance/`](../../scripts/assurance/). The glossary is section 8 of the terminology standard.
 
+The requirement-to-test matrix is checked by
+[`scripts/check_matrix_tests.py`](../../scripts/check_matrix_tests.py). It
+resolves every test reference in the matrix evidence columns against the
+inventory reported by `cargo test --all-targets -- --list` and fails on an
+unresolved or ambiguous name:
+
+```bash
+python3 scripts/check_matrix_tests.py
+python3 -m unittest discover -s scripts -p 'test_*.py'
+```
+
 ## 3. Required engineering sequence
 
 1. Define the requirement, owner, acceptance evidence and failure model.
