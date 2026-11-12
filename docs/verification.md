@@ -208,3 +208,25 @@ stages and failure classes). No live venue was contacted; venue access is a
 separate, permission-gated question this repository does not grant either way.
 `network-probe` establishes transport only, never feed health. No gate was
 transferred from an earlier tree.
+
+## Addendum 3 (2026-11-13, branch `feat/egress-connectivity-lab`)
+
+Adds the offline per-symbol feed-completeness accounting (`completeness`
+command). For one capture it reports, per symbol: anchored vs unanchored
+deltas, first-event kind, snapshot and update counts, longest quiet interval
+with bounds (observational, not missing-data evidence), and the aggregate
+`deltas_before_snapshot`; exits non-zero when any delta arrived before its
+symbol's first snapshot. Honest boundary: the report proves what was
+recorded, not that the venue delivered every event; `verify` remains the
+book-reconstruction check. Gate results re-run on this branch:
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all -- --check` | Pass |
+| `cargo clippy --all-targets --locked -- -D warnings` | Pass |
+| `cargo test --all-targets --locked` | **346 passed, 0 failed, 3 ignored**: 290 library, 1 binary, 12 mock-exchange E2E, 19 egress lab, 9 inspect, 10 numeric model, 2 replay fixture, 3 session recovery |
+| `cargo test --doc --locked` | Pass: 1 documentation test |
+| `python3 scripts/check_architecture.py --check` | Pass: 49 Rust source files, 49 reachable from crate roots |
+| `python3 scripts/check_matrix_tests.py` | Pass: 128 file-qualified references; all 24 mandatory evidence tests present |
+| `python3 -m unittest discover -s scripts -p 'test_*.py'` | Pass: 24 gate tests |
+| `python3 -m unittest discover -s scripts/assurance -p 'test_*.py'` | Pass: 16 assurance-tool tests |

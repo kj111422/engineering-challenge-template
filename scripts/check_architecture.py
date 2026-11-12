@@ -21,6 +21,7 @@ DOC = ROOT / "docs/architecture.md"
 SOURCE_RESPONSIBILITIES = {
     "src/cli.rs": "clap command model and CLI-to-settings overrides",
     "src/config.rs": "configuration defaults, deserialization, and validation",
+    "src/completeness.rs": "per-symbol feed-completeness accounting for captures: anchored vs unanchored deltas, quiet intervals",
     "src/coordinator.rs": "startup, orchestration loop, discovery reconciliation, controls, shutdown",
     "src/egress.rs": "egress policy: direct/proxy routing, fail-closed tunnelling, route provenance and redaction",
     "src/fixed.rs": "fixed-point price/quantity parsing and checked arithmetic",

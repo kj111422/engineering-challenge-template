@@ -174,6 +174,24 @@ pub enum Command {
         #[arg(long = "read-chunk-size", default_value = "auto")]
         read_chunk_size: String,
     },
+    /// Per-symbol completeness accounting for a capture: anchored vs
+    /// unanchored deltas, per-symbol baseline status, longest quiet
+    /// intervals observed. Exits non-zero when any symbol received deltas
+    /// before its first snapshot.
+    Completeness {
+        /// Capture path.
+        #[arg(value_name = "SBE")]
+        input: PathBuf,
+        /// Chunk size in bytes, or `auto`.
+        #[arg(long = "read-chunk-size", default_value = "auto")]
+        read_chunk_size: String,
+        /// Emit the full per-symbol ledger (capped sample, deterministic).
+        #[arg(long)]
+        include_symbols: bool,
+        /// Write the JSON report to this path in addition to stdout.
+        #[arg(long, value_name = "FILE")]
+        out: Option<PathBuf>,
+    },
     /// Measure discovery RTT and websocket timestamp latency.
     Latency {
         /// Optional path for the JSON latency report.
