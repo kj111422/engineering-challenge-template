@@ -68,7 +68,7 @@ cargo run --release -- journal verify captures/journal/<run-id>
 ```
 
 Other commands: `replay`, `inspect`, `verify`, `latency`, `discover`, `journal`,
-`network-probe`.
+`network-probe`, `completeness`.
 See `config.example.toml` and `config.polymarket.example.toml`.
 
 ## Build and test

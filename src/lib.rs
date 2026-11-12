@@ -1,6 +1,7 @@
 pub mod capacity;
 pub mod catalog;
 pub mod collector;
+pub mod completeness;
 pub mod config;
 pub mod coordinator;
 pub mod egress;

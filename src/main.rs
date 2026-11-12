@@ -9,7 +9,7 @@ use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
 use engineering_challenge::{
-    config::Settings, coordinator, inspect, journal, latency, probe, replay,
+    completeness, config::Settings, coordinator, inspect, journal, latency, probe, replay,
     report::write_json_atomic, verify,
 };
 
@@ -73,6 +73,25 @@ async fn main() -> anyhow::Result<()> {
                 summary.unknown_messages,
                 summary.deltas_before_snapshot,
                 summary.snapshot_mismatches
+            );
+            Ok(())
+        }
+        Command::Completeness {
+            input,
+            read_chunk_size,
+            include_symbols,
+            out,
+        } => {
+            let summary = completeness::run(&input, &read_chunk_size, include_symbols)?;
+            if let Some(path) = out.as_deref() {
+                write_json_atomic(path, &summary).context("writing completeness report")?;
+            }
+            emit_json(&summary)?;
+            anyhow::ensure!(
+                summary.valid,
+                "completeness failed: {} unanchored delta(s) across {} symbol(s)",
+                summary.deltas_before_snapshot,
+                summary.unanchored_symbols
             );
             Ok(())
         }
