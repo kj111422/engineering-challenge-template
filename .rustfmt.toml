@@ -1,0 +1,9 @@
+# Formatting rules for this workspace; enforced by `cargo fmt --check` in CI.
+# Everything not pinned here is deliberately the stable default, so rustfmt
+# has exactly one knob per decision and none to argue.
+
+# Pin line endings: CI runs on Linux, contributors on macOS; never CRLF.
+newline_style = "Unix"
+# Match the edition-2024 style applied by the pinned toolchain.
+style_edition = "2024"
+

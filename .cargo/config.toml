@@ -1,0 +1,10 @@
+# Local cargo policy for this repository. Machine-local concerns (registries,
+# credentials, proxies) belong in ~/.cargo/config.toml, not here.
+# Aliases encode the exact gate commands used by CI and docs; they are
+# additive and do not redefine builtin cargo behavior.
+
+[alias]
+clippy-gate = "clippy --all-targets --locked -- -D warnings"
+test-gate = "test --all-targets --locked"
+fmt-check = "fmt --all -- --check"
+

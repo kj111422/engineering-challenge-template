@@ -1,5 +1,18 @@
+# Clippy configuration: thresholds and test-allowance policy only.
+# Deny/warn levels live in Cargo.toml [lints]; format rules in .rustfmt.toml;
+# do not restate them here.
+
+# Floor for lint tuning: matches Cargo.toml rust-version and the pinned
+# toolchain (1.99.x); keeps lints from suggesting post-MSRV idioms.
+msrv = "1.99"
+
+# Never propose API-breaking rewrites of the library surface; the public
+# API is the contract other challenge code depends on.
+avoid-breaking-exported-api = true
+
 # Allowances for test code only. Production code must be clean.
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-panic-in-tests = true
 allow-print-in-tests = true
+
