@@ -49,6 +49,20 @@ preserve total write order. `src/journal.rs` is a separate append-only path, so
 the SBE schema is unchanged. `src/metrics.rs` serves counters, health, and
 readiness without putting network work on the data path.
 
+`src/egress.rs` binds how the process reaches the venue: direct networking by
+default, or one explicitly configured proxy (`http` CONNECT or SOCKS5, with a
+typed remote-DNS choice) resolved from environment variables at load time. A
+failed proxy never falls back to direct egress; the failure is reported and
+the connection is refused. REST discovery and websocket sessions build their
+transport from the same policy. The non-secret route identity — mode, kind,
+host, port, DNS mode, label and a SHA-256 fingerprint — is recorded in the
+journal manifest and in `network-probe` reports; credentials never appear in
+any of those artifacts. `src/probe.rs` implements `network-probe`, which
+measures DNS, TCP, proxy negotiation, TLS and the websocket upgrade as
+independent stages. It never authenticates to a venue; it classifies a
+transport as `transport_ok` or `failed` with a deterministic reason and an
+artifact the operator can check.
+
 ```mermaid
 flowchart LR
     CLI[CLI and Settings] --> COORD[Coordinator]
@@ -143,7 +157,8 @@ flowchart LR
 | Composition | `main.rs`, `coordinator.rs`, `cli.rs`, `config.rs` | CLI, settings precedence, adapter construction, lifecycle |
 | Discovery | `exchange/*/discovery.rs`, `capacity.rs`, `catalog.rs` | Venue discovery, eligibility, capacity admission, checkpoint |
 | State | `collector/state.rs`, `orderbook.rs`, `model.rs`, `fixed.rs` | Serialized books, failover, fixed-point values, output model |
-| Transport | `exchange/*/session.rs`, `session.rs`, `ws.rs` | Protocol handling, supervised workers, connection options |
+| Transport | `exchange/*/session.rs`, `session.rs`, `ws.rs`, `egress.rs` | Protocol handling, supervised workers, connection options; egress policy: direct or explicit fail-closed proxy, route provenance |
+| Diagnostics | `probe.rs` | `network-probe`: stage-timed transport diagnostic, JSON report |
 | Output | `writer.rs`, `util/aligned_sbe_*.rs`, `util/dtos.rs` | Ordered SBE writes, chunk framing, supplied-schema DTOs |
 | Durability | `journal.rs`, `persistence.rs`, `report.rs` | Raw-frame journal, checkpoints, run sidecars |
 | Offline tools | `replay.rs`, `inspect.rs`, `verify.rs`, `latency.rs` | Deterministic replay, decode, consistency, latency |

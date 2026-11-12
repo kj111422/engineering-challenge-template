@@ -337,6 +337,31 @@ pub struct NetworkSettings {
     /// candidate. A stalled handshake fails like any other transient error
     /// instead of wedging the source.
     pub connect_timeout_secs: u64,
+    /// Egress route for collection traffic: `direct` (default) or
+    /// `explicit_proxy`. An explicit proxy is used only for a route the
+    /// account holder is permitted to use; it must be authorized by the
+    /// venue's terms and the account holder's eligibility and applicable
+    /// law. There is never a silent fallback to direct networking.
+    pub egress_mode: String,
+    /// Environment variable holding the proxy URL
+    /// (`http://[user[:password]@]host[:port]` for CONNECT, `socks5://...`,
+    /// or `socks5h://...` for proxy-resolved DNS). Read only when
+    /// `egress_mode = "explicit_proxy"`; never stored in configuration.
+    pub proxy_url_env: String,
+    /// Environment variable holding the proxy username; takes effect only
+    /// together with `proxy_auth_password_env`.
+    pub proxy_auth_user_env: String,
+    /// Environment variable holding the proxy password; takes effect only
+    /// together with `proxy_auth_user_env`.
+    pub proxy_auth_password_env: String,
+    /// SOCKS5 only: when true, the proxy resolves the venue hostname. For
+    /// `socks5h://` this is forced. HTTP CONNECT always uses remote DNS by
+    /// construction of the tunnel target.
+    pub proxy_remote_dns: bool,
+    /// Optional non-secret operator label for evidence manifests, for example
+    /// the name of the approved egress path. Recorded verbatim; credentials
+    /// must never be placed here.
+    pub proxy_label: Option<String>,
 }
 
 impl Default for NetworkSettings {
@@ -347,21 +372,35 @@ impl Default for NetworkSettings {
             source_port: None,
             connect_race: 1,
             connect_timeout_secs: 30,
+            egress_mode: "direct".to_owned(),
+            proxy_url_env: "MARKETDATA_PROXY_URL".to_owned(),
+            proxy_auth_user_env: "MARKETDATA_PROXY_USERNAME".to_owned(),
+            proxy_auth_password_env: "MARKETDATA_PROXY_PASSWORD".to_owned(),
+            proxy_remote_dns: true,
+            proxy_label: None,
         }
     }
 }
 
 impl NetworkSettings {
     /// Convert validated settings into transport options.
-    #[must_use]
-    pub fn connect_options(&self) -> crate::ws::ConnectOptions {
-        crate::ws::ConnectOptions {
+    ///
+    /// # Errors
+    ///
+    /// Fails when `explicit_proxy` is configured but the proxy environment is
+    /// missing or invalid; the caller must not proceed. This never falls
+    /// back to direct networking.
+    pub fn connect_options(&self) -> anyhow::Result<crate::ws::ConnectOptions> {
+        let egress = crate::egress::EgressRoute::from_network(self)?;
+        Ok(crate::ws::ConnectOptions {
             tcp_nodelay: self.tcp_nodelay,
             source_ip: self.source_ip,
             source_port: self.source_port,
             attempts: self.connect_race,
             connect_timeout: std::time::Duration::from_secs(self.connect_timeout_secs.max(1)),
-        }
+            egress,
+            trace: None,
+        })
     }
 }
 
@@ -424,7 +463,7 @@ pub struct FileConfig {
     pub journal: JournalSettings,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Settings {
     pub exchange: ExchangeKind,
     pub kalshi: KalshiSettings,
@@ -679,6 +718,29 @@ impl Settings {
             self.network.connect_race == 1 || self.network.source_port.is_none(),
             "network.source_port cannot be combined with connect_race > 1"
         );
+        anyhow::ensure!(
+            self.network.egress_mode.eq_ignore_ascii_case("direct")
+                || self
+                    .network
+                    .egress_mode
+                    .eq_ignore_ascii_case("explicit_proxy"),
+            "network.egress_mode must be `direct` or `explicit_proxy`, got `{}`",
+            self.network.egress_mode
+        );
+        if self
+            .network
+            .egress_mode
+            .eq_ignore_ascii_case("explicit_proxy")
+        {
+            // Fail at load time, never at the first connection attempt.
+            crate::egress::EgressRoute::from_network(&self.network)?;
+        }
+        if self.network.egress_mode.eq_ignore_ascii_case("direct") {
+            anyhow::ensure!(
+                self.network.proxy_label.is_none(),
+                "network.proxy_label is only meaningful with egress_mode = explicit_proxy"
+            );
+        }
         anyhow::ensure!(
             self.output.chunk_size >= 1024 && self.output.chunk_size.is_power_of_two(),
             "output.chunk_size must be a power of two >= 1024"

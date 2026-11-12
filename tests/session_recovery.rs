@@ -385,6 +385,7 @@ async fn failed_journal_append_stops_worker_before_event_forwarding() {
         run_id: "run".to_owned(),
         venue: "test".to_owned(),
         code_commit: "test".to_owned(),
+        route: None,
         config_sha256: "test".to_owned(),
     };
     let handle = JournalHandle::start(config, meta).expect("journal start");

@@ -18,7 +18,7 @@ ed25519-dalek = { version = "3.0", features = ["pkcs8", "pem", "rand_core"] }
 futures-util = "0.3"
 http = "1"
 rand = "0.8"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip", "http2"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip", "http2", "socks"] }
 rsa = { version = "0.9.8", features = ["sha2", "pem"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -26,6 +26,7 @@ sha2 = "0.10"
 signature = "2"
 thiserror = "2"
 tokio = { version = "1.54", features = ["rt-multi-thread", "macros", "signal", "time", "sync", "net", "io-util", "io-std"] }
+tokio-socks = "0.5.3"
 tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
 toml = "0.8"
 tracing = "0.1"

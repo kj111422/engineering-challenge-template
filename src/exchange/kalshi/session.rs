@@ -163,6 +163,7 @@ impl SessionFactory for KalshiExchange {
         let connect_options = self
             .network
             .connect_options()
+            .with_context(|| format!("deriving transport options for source {source}"))?
             .for_ordinal(source_ordinal(source))
             .with_context(|| format!("deriving connect options for source {source}"))?;
         Ok(Box::new(KalshiSession::new(

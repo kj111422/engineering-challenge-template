@@ -45,6 +45,11 @@ and [operating envelope](docs/operating-envelope.md).
 - Exposes Prometheus text metrics, `/healthz`, and `/readyz` when configured.
 - Provides deterministic replay, offline SBE inspect and verify, and an optional
   checksummed raw-frame journal with `journal verify` and `journal recover`.
+- Egress is direct by default or one explicitly configured proxy (HTTP
+  CONNECT or SOCKS5), fail-closed with no silent fallback, sharing one policy
+  between REST discovery and websockets. Route provenance — mode, kind, host,
+  port, DNS mode, fingerprint — is recorded in the journal manifest; the
+  `network-probe` subcommand reports the path stage by stage as JSON.
 
 ## Quick start (Polymarket, no credentials)
 
@@ -62,7 +67,8 @@ Add `--journal-dir captures/journal` to record raw frames, then verify:
 cargo run --release -- journal verify captures/journal/<run-id>
 ```
 
-Other commands: `replay`, `inspect`, `verify`, `latency`, `discover`, `journal`.
+Other commands: `replay`, `inspect`, `verify`, `latency`, `discover`, `journal`,
+`network-probe`.
 See `config.example.toml` and `config.polymarket.example.toml`.
 
 ## Build and test

@@ -221,6 +221,9 @@ pub struct JournalMeta {
     pub code_commit: String,
     /// SHA-256 of the serialized configuration that affects capture.
     pub config_sha256: String,
+    /// Non-secret route provenance: mode, kind, route identity, and DNS mode.
+    /// Never contains credentials.
+    pub route: Option<crate::egress::RouteProvenance>,
 }
 
 impl JournalMeta {
@@ -228,13 +231,19 @@ impl JournalMeta {
     /// microseconds and the process id; the run directory is created
     /// exclusively.
     #[must_use]
-    pub fn new(venue: &str, code_commit: &str, config_sha256: &str) -> Self {
+    pub fn new(
+        venue: &str,
+        code_commit: &str,
+        config_sha256: &str,
+        route: Option<crate::egress::RouteProvenance>,
+    ) -> Self {
         let now = now_us().unwrap_or(0);
         Self {
             run_id: format!("{now:x}-{:x}", std::process::id()),
             venue: venue.to_owned(),
             code_commit: code_commit.to_owned(),
             config_sha256: config_sha256.to_owned(),
+            route,
         }
     }
 }
@@ -831,6 +840,10 @@ struct Manifest {
     venue: String,
     code_commit: String,
     config_sha256: String,
+    /// Non-secret egress provenance. Absent in journals written before
+    /// route provenance existed; verification tolerates either shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    route: Option<crate::egress::RouteProvenance>,
     created_at_us: i64,
     state: RunState,
     durability: DurabilityPolicy,
@@ -847,6 +860,7 @@ impl Manifest {
             venue: meta.venue.clone(),
             code_commit: meta.code_commit.clone(),
             config_sha256: meta.config_sha256.clone(),
+            route: meta.route.clone(),
             created_at_us: now_us().unwrap_or(0),
             state: RunState::Open,
             durability: durability.clone(),
