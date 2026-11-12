@@ -9,8 +9,8 @@ use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
 use engineering_challenge::{
-    config::Settings, coordinator, inspect, journal, latency, replay, report::write_json_atomic,
-    verify,
+    config::Settings, coordinator, inspect, journal, latency, probe, replay,
+    report::write_json_atomic, verify,
 };
 
 use crate::cli::{Cli, Command, JournalCommand};
@@ -108,6 +108,19 @@ async fn main() -> anyhow::Result<()> {
                 write_json_atomic(path, &result).context("writing discovery output")?;
             }
             emit_json(&result)?;
+            Ok(())
+        }
+        Command::NetworkProbe { target, out } => {
+            let report = probe::run(&settings, target.as_deref()).await?;
+            if let Some(path) = out.as_deref() {
+                write_json_atomic(path, &report).context("writing probe report")?;
+            }
+            emit_json(&report)?;
+            anyhow::ensure!(
+                report.is_transport_ok(),
+                "network probe failed: {}",
+                report.reason.as_deref().unwrap_or("unknown")
+            );
             Ok(())
         }
         Command::Journal { command } => match command {

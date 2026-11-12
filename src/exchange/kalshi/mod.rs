@@ -66,15 +66,16 @@ impl KalshiExchange {
             Err(error) if require_auth => return Err(error),
             Err(_) => None,
         };
-        let client = Client::builder()
-            .user_agent(concat!(
+        let client = crate::egress::http_client(
+            concat!(
                 "voluntas-collector/",
                 env!("CARGO_PKG_VERSION"),
                 " (+https://github.com/voluntas-io/engineering-challenge)"
-            ))
-            .timeout(Duration::from_secs(settings.request_timeout_secs))
-            .build()
-            .map_err(|error| anyhow::anyhow!("building Kalshi HTTP client: {error}"))?;
+            ),
+            Duration::from_secs(settings.request_timeout_secs),
+            &network,
+        )
+        .map_err(|error| anyhow::anyhow!("building Kalshi HTTP client: {error}"))?;
         Ok(Self {
             settings,
             auth,

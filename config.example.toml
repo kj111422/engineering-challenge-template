@@ -64,6 +64,27 @@ connect_race = 1
 # Deadline for one full connection attempt (DNS, TCP, TLS, websocket upgrade,
 # including every raced candidate).
 connect_timeout_secs = 30
+# Egress route for collection traffic. "direct" (the default) dials venues
+# directly and ignores shell proxy variables. "explicit_proxy" uses ONE
+# configured proxy for REST discovery and websockets; it must be a route the
+# venue's terms, your account eligibility and applicable law permit you to
+# use. A proxy is a network path, not an entitlement.
+egress_mode = "direct"
+# With egress_mode = "explicit_proxy", the proxy URL and credentials come
+# from environment variables, never from this file:
+#   MARKETDATA_PROXY_URL            e.g. http://proxy.internal:8080 (CONNECT)
+#                                  socks5://proxy.internal:1080
+#                                  socks5h://proxy.internal:1080 (proxy-resolved DNS)
+#   MARKETDATA_PROXY_USERNAME      optional proxy username
+#   MARKETDATA_PROXY_PASSWORD      optional proxy password
+# proxy_url_env = "MARKETDATA_PROXY_URL"
+# proxy_auth_user_env = "MARKETDATA_PROXY_USERNAME"
+# proxy_auth_password_env = "MARKETDATA_PROXY_PASSWORD"
+# SOCKS5 only: proxy resolves the venue hostname (forced on for socks5h://).
+# proxy_remote_dns = true
+# Non-secret route label recorded in journal manifests and probe reports.
+# proxy_label = "approved-egress-a"
+# A proxy that cannot be reached never falls back to direct networking.
 
 [output]
 path = "captures/kalshi.sbe"

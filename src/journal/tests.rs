@@ -31,6 +31,7 @@ fn meta(run_id: &str) -> JournalMeta {
         run_id: run_id.to_owned(),
         venue: "polymarket".to_owned(),
         code_commit: "test".to_owned(),
+        route: None,
         config_sha256: "test".to_owned(),
     }
 }

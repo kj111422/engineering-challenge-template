@@ -81,7 +81,15 @@ fn start_journal(settings: &Settings, venue: &str) -> anyhow::Result<Option<Jour
         .or(option_env!("GITHUB_SHA"))
         .unwrap_or("unknown");
     let config_sha256 = settings.capture_config_sha256()?;
-    let meta = JournalMeta::new(venue, code_commit, &config_sha256);
+    // Settings validation has already run at load time; a failure here means
+    // the proxy environment changed underneath us and the run must stop
+    // rather than record a misleading provenance.
+    let route = Some(
+        crate::egress::EgressRoute::from_network(&settings.network)
+            .context("resolving egress route for journal provenance")?
+            .provenance(&settings.network),
+    );
+    let meta = JournalMeta::new(venue, code_commit, &config_sha256, route);
     JournalHandle::start(config, meta)
         .map(Some)
         .context("starting raw-frame journal")

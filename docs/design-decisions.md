@@ -317,3 +317,70 @@ as is a venue that puts `sid` only on `subscribed`.
 `src/exchange/kalshi/session.rs::merged_ok_without_sid_uses_the_single_orderbook_subscription`,
 `src/exchange/kalshi/session.rs::merged_ok_market_list_replaces_the_tracked_set_authoritatively`,
 `src/exchange/kalshi/session.rs::subscribed_with_an_existing_sid_merges_instead_of_failing`.
+
+## 11. Egress policy: direct by default, explicit proxy, fail closed
+
+**Context.** A collector may legitimately need a controlled egress path —
+corporate network policy, a proxy appliance, a venue that restricts where its
+feed is consumed — and silently routing market data through an unverified
+route is unacceptable for an evidence-first system. The collector previously
+dialed the venue directly with no declared route, and REST discovery and
+websocket sessions had no shared transport policy.
+
+**Decision.** `src/egress.rs` owns the route. `direct` is the default and is
+unchanged: direct sockets never inherit unrelated shell proxy variables. A
+single explicitly configured proxy (`http://` CONNECT or SOCKS5/SOCKS5H) is
+resolved from environment variables named by `[network]` at settings load
+time, never from the TOML document. Fail closed: a failed proxy never falls
+back to direct networking, at any stage. SOCKS5 DNS resolution mode is a typed
+choice (`proxy_remote_dns`, forced on for `socks5h://`). HTTP CONNECT
+requires a successful 2xx and rejects trailing bytes on a 2xx response; SOCKS5
+passes the target as a domain name (remote DNS) or a locally resolved IP
+literal (local DNS). Venue TLS is always end-to-end and always verifies the
+venue hostname; proxy authentication is a separate credential domain read
+from the environment, redacted in every log, manifest, fingerprint and error
+path, and covered by a regression test. REST clients are built from the same
+policy (`no_proxy` blocks ambient variables in both modes; exactly one proxy
+is attached in explicit mode). The non-secret route identity is persisted in
+the journal manifest (mode, kind, host, port, DNS mode, label, SHA-256
+fingerprint) as provenance; credentials are not part of the fingerprint.
+
+`network-probe` (`src/probe.rs`) measures the path stage by stage — DNS,
+TCP, proxy negotiation, TLS, websocket upgrade — and emits a JSON report with
+a stable schema and deterministic failure classes; it never authenticates to a
+venue. A stage is never inferred from another stage's success.
+
+**Alternatives.** Per-process shell proxy variables (`HTTP_PROXY`/`ALL_PROXY`
+inherited silently — violates the no-surprise-egress property); one proxy
+setting shared by everything with no fail-closed semantics (would leak
+partial failures into misleading "connected" states); TLS to the proxy itself
+(not required for the supported transports; rejected until there is a
+reviewed, non-interceptable use case); location-disguising egress of any
+kind (rejected outright; a proxy is a network path, not an entitlement, and
+must never bypass a venue's eligibility rules).
+
+**Consequences.** Every capture records how its bytes reached the venue
+(direct or explicit-proxy provenance) with a hashable identity. REST and
+websocket paths can no longer diverge onto different routes than the one
+configured. A failed proxy surfaces as a classified, attributable error
+before any market data is observed. The proxy path is verified against
+loopback mocks only; live-venue use remains permission-gated by venue terms
+and account eligibility. `network-probe` proves transport, not feed
+health: subscription acknowledgement and sustained continuity remain the
+collector's concern and are verified by the run-time journal and verifier.
+
+**Implementation.** `src/egress.rs`, `src/probe.rs`, `src/ws.rs` (`connect`,
+`ProbeTrace`/`ProbeStage`, `ConnectOptions::trace`), `src/config.rs`
+(`[network] egress_mode`, `proxy_url_env`, `proxy_auth_user_env`,
+`proxy_auth_password_env`, `proxy_remote_dns`, `proxy_label`, plus
+load-time validation), `src/exchange/*/mod.rs` and
+`src/exchange/*/session.rs` (route resolution at startup),
+`src/journal.rs` (manifest `route` provenance, additive and
+backwards-compatible).
+
+**Verification.** `tests/egress_lab.rs` (19 lab tests: direct baseline,
+CONNECT and SOCKS5 tunnels, remote/local DNS, wrong credentials, 2xx with
+trailing bytes, fail-closed rejection with no venue dial, manifest
+provenance without credentials, `network-probe` direct/proxy/config
+failure), `src/egress.rs` unit tests (env-lookup injection; no process-global
+state is touched by the tests).

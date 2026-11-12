@@ -972,6 +972,7 @@ mod tests {
                 venue: "test".to_owned(),
                 code_commit: "test".to_owned(),
                 config_sha256: "test".to_owned(),
+                route: None,
             },
         )
         .expect("journal start")

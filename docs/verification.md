@@ -180,3 +180,31 @@ the no-sid fallback, the authoritative full-list replacement, and a reused
 The fix is verified against unit-level mock-server scenarios only; Kalshi
 live validation remains blocked without credentials. No gate above was
 transferred from an earlier tree.
+
+## Addendum 2 (2026-11-13, branch `feat/egress-connectivity-lab`)
+
+Builds on `fix/kalshi-merged-subscribe-acks`. Adds the auditable egress
+subsystem (direct by default, one explicitly configured fail-closed proxy,
+shared by REST discovery and websockets), non-secret route provenance in the
+journal manifest, and the `network-probe` transport diagnostic. Gate results
+re-run on this branch:
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all -- --check` | Pass |
+| `cargo clippy --all-targets --locked -- -D warnings` | Pass |
+| `cargo test --all-targets --locked` | **341 passed, 0 failed, 3 ignored**: 285 library, 1 binary, 12 mock-exchange E2E, 19 egress lab, 9 inspect, 10 numeric model, 2 replay fixture, 3 session recovery |
+| `cargo test --doc --locked` | Pass: 1 documentation test |
+| `cargo build --release --locked` | Pass |
+| `python3 scripts/check_architecture.py --check` | Pass: 48 Rust source files, 48 reachable from crate roots |
+| `python3 scripts/check_matrix_tests.py` | Pass: 128 file-qualified references; 24 mandatory evidence tests present |
+| `python3 -m unittest discover -s scripts -p 'test_*.py'` | Pass: 24 gate tests |
+| `python3 -m unittest discover -s scripts/assurance -p 'test_*.py'` | Pass: 16 assurance-tool tests |
+
+Evidence boundaries: the egress lab exercised loopback mocks (HTTP CONNECT,
+SOCKS5 with username/password, tunnel byte-integrity, fail-closed rejection
+with no venue dial, manifest provenance without credentials, `network-probe`
+stages and failure classes). No live venue was contacted; venue access is a
+separate, permission-gated question this repository does not grant either way.
+`network-probe` establishes transport only, never feed health. No gate was
+transferred from an earlier tree.

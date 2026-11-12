@@ -186,6 +186,19 @@ pub enum Command {
         #[arg(long, value_name = "FILE")]
         out: Option<PathBuf>,
     },
+    /// Probe the transport path: DNS, TCP, optional proxy negotiation,
+    /// TLS and the websocket upgrade, reported as stage timings and a JSON
+    /// report. This never authenticates to a venue and never collects market
+    /// data; it states only whether the transport completed.
+    NetworkProbe {
+        /// Optional path for the JSON probe report.
+        #[arg(long, value_name = "FILE")]
+        out: Option<PathBuf>,
+        /// Websocket URL to probe (ws:// or wss://). Defaults to the
+        /// configured exchange's websocket endpoint.
+        #[arg(long, value_name = "URL")]
+        target: Option<String>,
+    },
     /// Inspect a raw-frame journal.
     Journal {
         #[command(subcommand)]
