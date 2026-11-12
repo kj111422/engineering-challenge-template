@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "branch": {
+    "base": "main",
+    "allowed_topic_prefixes": [
+      "feat",
+      "fix",
+      "docs",
+      "test"
+    ],
+    "topic_pattern": "^[a-z0-9][a-z0-9._-]*$",
+    "one_coherent_change_per_branch": true,
+    "delete_after_verified_merge": true,
+    "automatic_local_branch_deletion": false,
+    "automatic_remote_branch_deletion": false
+  },
+  "history": {
+    "merge_strategy": "squash",
+    "require_linear_main": true,
+    "published_commit_rewrite": false,
+    "forbidden_operations": [
+      "rebase published commits",
+      "reset --hard on shared work",
+      "amend published commits"
+    ],
+    "grandfathered_merge_commits": [
+      "e19a85c",
+      "20b4a01"
+    ]
+  },
+  "working_tree": {
+    "must_be_clean_before_start": true,
+    "must_be_clean_after_finish": true,
+    "start_sequence": [
+      "git switch main",
+      "git pull --ff-only"
+    ],
+    "finish_check": "git status --porcelain",
+    "no_stash_at_finish": true
+  },
+  "inventory": {
+    "target_local_branches": [
+      "main"
+    ],
+    "target_remote_names": [
+      "origin"
+    ],
+    "target_remote_tracking_branches": [
+      "origin/main"
+    ],
+    "target_worktree_count": 1,
+    "target_stash_count": 0,
+    "target_tracked_generated_count": 0
+  },
+  "generated_paths": {
+    "forbidden_components": [
+      ".DS_Store",
+      ".vscode",
+      "__pycache__",
+      ".pytest_cache",
+      ".mypy_cache",
+      ".ruff_cache",
+      ".cache",
+      ".venv",
+      "venv",
+      "target",
+      "build",
+      "build-asan",
+      "dist",
+      "inventory.json",
+      "conformance_report.json",
+      "repomix.config.json"
+    ],
+    "forbidden_component_prefixes": [
+      "build-"
+    ],
+    "forbidden_suffixes": [
+      ".pyc",
+      ".pyo"
+    ]
+  },
+  "automation": {
+    "remote_tracking_prune": "git fetch --prune origin",
+    "prune_may_delete_remote_tracking_refs_only": true,
+    "must_not_delete_local_branches": true,
+    "must_not_delete_remote_branches": true,
+    "must_not_rewrite_history": true,
+    "must_not_stash_or_discard_changes": true
+  },
+  "commit_subject": {
+    "pattern": "^(feat|fix|docs|test|refactor|perf|build|ci|chore|revert)(\\([a-z0-9][a-z0-9._/-]*\\))?: .{1,64}$",
+    "maximum_length": 72,
+    "forbidden_exact_subjects": [
+      "fix",
+      "update",
+      "cleanup",
+      "final",
+      "final fix"
+    ],
+    "validate_unmerged_topic_commits_against": "main"
+  }
+}
