@@ -102,6 +102,7 @@ async fn discovers_and_receives_live_production_orderbook_snapshots() {
     let mut snapshots = 0u64;
     let mut level_changes = 0u64;
     let mut observed_symbols = BTreeSet::new();
+    let mut anchored_symbols = BTreeSet::new();
     let mut first_snapshot_at = None;
 
     while Instant::now() < deadline {
@@ -116,6 +117,7 @@ async fn discovers_and_receives_live_production_orderbook_snapshots() {
                     if desired.contains(&native_symbol) =>
                 {
                     snapshots = snapshots.saturating_add(1);
+                    anchored_symbols.insert(native_symbol.clone());
                     observed_symbols.insert(native_symbol);
                     first_snapshot_at.get_or_insert_with(Instant::now);
                 }
@@ -128,27 +130,34 @@ async fn discovers_and_receives_live_production_orderbook_snapshots() {
                 _ => {}
             }
         }
-        // Once a real snapshot has anchored at least one selected market, keep
-        // the socket open briefly to observe any subsequent deltas without
-        // making a quiet market fail solely because no trade occurred.
-        if first_snapshot_at.is_some_and(|started| started.elapsed() >= Duration::from_secs(15)) {
+        // Once every selected market is anchored, keep the socket open briefly
+        // to observe any subsequent deltas without making a quiet market fail
+        // solely because no trade occurred. If any selected market is still
+        // unanchored, continue until the deadline so the failure names it.
+        let observed_quiet_period =
+            first_snapshot_at.is_some_and(|started| started.elapsed() >= Duration::from_secs(15));
+        if anchored_symbols.len() == desired.len() && observed_quiet_period {
             break;
         }
     }
 
     session.close().await;
+    let missing: Vec<_> = desired.difference(&anchored_symbols).cloned().collect();
     eprintln!(
         "KALSHI_LIVE_EVIDENCE exchange=kalshi environment=production \
-         discovered_markets={} subscribed_markets={} observed_symbols={} \
-         snapshots={} level_changes={}",
+         discovered_markets={} subscribed_markets={} anchored_symbols={}/{} \
+         observed_symbols={} snapshots={} level_changes={} missing={missing:?}",
         markets.len(),
+        desired.len(),
+        anchored_symbols.len(),
         desired.len(),
         observed_symbols.len(),
         snapshots,
         level_changes
     );
     assert!(
-        snapshots > 0,
-        "authenticated Kalshi websocket delivered no order-book snapshot for the selected markets"
+        anchored_symbols.len() == desired.len(),
+        "every selected Kalshi market must receive its own order-book snapshot; \
+         missing anchors: {missing:?}"
     );
 }

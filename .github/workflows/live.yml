@@ -75,6 +75,10 @@ jobs:
         env:
           LIVE_DURATION_SECS: "120"
           LIVE_MAX_MARKETS: "5"
+          # This workflow is the smoke tier: a small selected market set. It
+          # cannot emit LIVE_UNIVERSE_OK. Run the script directly with
+          # LIVE_EVIDENCE_SCOPE=universe LIVE_MAX_MARKETS=0 for that claim.
+          LIVE_EVIDENCE_SCOPE: "smoke"
           # Per-run directory avoids mixing evidence with stale captures left
           # in a self-hosted runner's persistent workspace.
           LIVE_EVIDENCE_DIR: captures/live-${{ github.run_id }}-${{ github.run_attempt }}

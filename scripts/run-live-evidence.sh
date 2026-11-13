@@ -9,6 +9,9 @@ cd "$ROOT"
 
 DURATION_SECS="${LIVE_DURATION_SECS:-120}"
 MAX_MARKETS="${LIVE_MAX_MARKETS:-5}"
+SCOPE="${LIVE_EVIDENCE_SCOPE:-smoke}"
+SHARDS="${LIVE_SHARDS:-}"
+REPLICAS="${LIVE_REPLICAS:-1}"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 OUT_ROOT="${LIVE_EVIDENCE_DIR:-$ROOT/captures/live-$STAMP}"
 case "$OUT_ROOT" in /*) ;; *) OUT_ROOT="$ROOT/$OUT_ROOT" ;; esac
@@ -30,8 +33,37 @@ if [[ ! "$DURATION_SECS" =~ ^[0-9]+$ ]] || (( DURATION_SECS < 30 )); then
   echo "ERROR: LIVE_DURATION_SECS must be an integer >= 30." >&2
   exit 2
 fi
-if [[ ! "$MAX_MARKETS" =~ ^[0-9]+$ ]] || (( MAX_MARKETS < 1 )); then
-  echo "ERROR: LIVE_MAX_MARKETS must be an integer >= 1." >&2
+case "$SCOPE" in
+  smoke|universe) ;;
+  *)
+    echo "ERROR: LIVE_EVIDENCE_SCOPE must be 'smoke' or 'universe'." >&2
+    exit 2
+    ;;
+esac
+if [[ -z "$SHARDS" ]]; then
+  # Auto-derive shards for a universe run so the per-socket bound can be met;
+  # the smoke tier keeps one shard and one replica for a small, fast run.
+  if [[ "$SCOPE" == universe ]]; then SHARDS=0; else SHARDS=1; fi
+fi
+if [[ ! "$MAX_MARKETS" =~ ^[0-9]+$ ]]; then
+  echo "ERROR: LIVE_MAX_MARKETS must be an integer >= 0." >&2
+  exit 2
+fi
+if [[ "$SCOPE" == universe ]]; then
+  if (( MAX_MARKETS != 0 )); then
+    echo "ERROR: LIVE_EVIDENCE_SCOPE=universe requires LIVE_MAX_MARKETS=0 (the whole discovered universe)." >&2
+    exit 2
+  fi
+elif (( MAX_MARKETS < 1 )); then
+  echo "ERROR: LIVE_MAX_MARKETS must be >= 1 for the smoke tier." >&2
+  exit 2
+fi
+if [[ ! "$SHARDS" =~ ^[0-9]+$ ]] || (( SHARDS > 256 )); then
+  echo "ERROR: LIVE_SHARDS must be an integer in [0, 256] (0 derives the count)." >&2
+  exit 2
+fi
+if [[ ! "$REPLICAS" =~ ^[0-9]+$ ]] || (( REPLICAS < 1 || REPLICAS > 4 )); then
+  echo "ERROR: LIVE_REPLICAS must be an integer in [1, 4]." >&2
   exit 2
 fi
 
@@ -80,8 +112,8 @@ run_venue() {
     --journal-dir "$journal_root" \
     --max-markets "$MAX_MARKETS" \
     --duration-secs "$DURATION_SECS" \
-    --shards 1 \
-    --replicas 1 \
+    --shards "$SHARDS" \
+    --replicas "$REPLICAS" \
     collect >"$directory/collector.log" 2>&1; then
     echo "[$venue] collector failed; see $directory/collector.log" >&2
     tail -n 60 "$directory/collector.log" >&2
@@ -100,6 +132,11 @@ run_venue() {
   if ! "$BIN" completeness "$capture" --out "$directory/completeness.json" \
       >"$directory/completeness.stdout.json" 2>"$directory/completeness.log"; then
     echo "[$venue] per-symbol completeness failed; see $directory/completeness.json" >&2
+    return 1
+  fi
+  if ! "$BIN" coverage "$capture" "$metadata" "$report" --out "$directory/coverage.json" \
+      >"$directory/coverage.stdout.json" 2>"$directory/coverage.log"; then
+    echo "[$venue] per-symbol coverage certification failed; see $directory/coverage.json" >&2
     return 1
   fi
 
@@ -123,12 +160,13 @@ PY
     return 1
   fi
 
-  if ! python3 - "$venue" "$report" "$directory/sbe-verify.json" \
-      "$directory/completeness.json" "$directory/journal-verify.json" <<'PY'
+  if ! python3 - "$venue" "$SCOPE" "$report" "$directory/sbe-verify.json" \
+      "$directory/completeness.json" "$directory/coverage.json" \
+      "$directory/journal-verify.json" <<'PY'
 import json, sys
-venue, report_path, sbe_path, completeness_path, journal_path = sys.argv[1:]
+venue, scope, report_path, sbe_path, completeness_path, coverage_path, journal_path = sys.argv[1:]
 load = lambda path: json.load(open(path, encoding="utf-8"))
-report, sbe, completeness, journal = map(load, (report_path, sbe_path, completeness_path, journal_path))
+report, sbe, completeness, coverage, journal = map(load, (report_path, sbe_path, completeness_path, coverage_path, journal_path))
 checks = {
     "venue_matches": report.get("exchange") == venue,
     "discovery_nonempty": int(report.get("discovered_symbols", 0)) > 0,
@@ -136,6 +174,10 @@ checks = {
     "sbe_messages_written": int(report.get("writer", {}).get("messages", 0)) > 0,
     "sbe_reconstruction_valid": sbe.get("valid") is True,
     "symbol_stream_anchored": completeness.get("valid") is True,
+    "coverage_valid": coverage.get("valid") is True,
+    "coverage_expected_matches_selected": int(coverage.get("expected", 0)) == int(report.get("discovered_symbols", 0)),
+    "coverage_every_expected_anchored": int(coverage.get("expected", 0)) > 0
+        and int(coverage.get("anchored", 0)) == int(coverage.get("expected", 0)),
     "journal_complete": journal.get("complete") is True,
     "journal_records_nonzero": int(journal.get("record_count", 0)) > 0,
 }
@@ -144,7 +186,9 @@ for name, passed in checks.items():
 if not all(checks.values()):
     sys.exit(1)
 print(
-    f"LIVE_FEED_OK venue={venue} discovered={report['discovered_symbols']} "
+    f"LIVE_FEED_OK venue={venue} scope={scope} discovered={report['discovered_symbols']} "
+    f"expected={coverage['expected']} acknowledged={coverage['acknowledged']} "
+    f"anchored={coverage['anchored']} "
     f"exchange_snapshots={report['core']['exchange_snapshots']} "
     f"deltas={report['core'].get('deltas_emitted', 0)} "
     f"sbe_messages={report['writer']['messages']} "
@@ -170,6 +214,7 @@ def sha(path):
 report = json.loads((root / "report.json").read_text(encoding="utf-8"))
 verify = json.loads((root / "sbe-verify.json").read_text(encoding="utf-8"))
 complete = json.loads((root / "completeness.json").read_text(encoding="utf-8"))
+coverage = json.loads((root / "coverage.json").read_text(encoding="utf-8"))
 journal = json.loads((root / "journal-verify.json").read_text(encoding="utf-8"))
 journal_files = [journal_run / "manifest.json", *sorted(journal_run.glob("*.pmj"))]
 manifest = {
@@ -178,12 +223,17 @@ manifest = {
     "environment": report.get("environment"),
     "exchange": report.get("exchange"),
     "discovered_symbols": report.get("discovered_symbols"),
+    "expected_symbols": coverage.get("expected"),
+    "acknowledged_symbols": coverage.get("acknowledged"),
+    "anchored_symbols": coverage.get("anchored"),
+    "expected_set_sha256": coverage.get("expected_set_sha256"),
     "exchange_snapshots": report.get("core", {}).get("exchange_snapshots"),
     "deltas_emitted": report.get("core", {}).get("deltas_emitted"),
     "sbe_messages": report.get("writer", {}).get("messages"),
     "journal_records": journal.get("record_count"),
     "sbe_valid": verify.get("valid"),
     "completeness_valid": complete.get("valid"),
+    "coverage_valid": coverage.get("valid"),
     "journal_complete": journal.get("complete"),
     "journal_directory": str(journal_run),
     "journal_files": [
@@ -192,7 +242,7 @@ manifest = {
     ],
     "artifacts": {
         name: {"path": name, "sha256": sha(root / name)}
-        for name in ("orderbook.sbe", "markets.json", "report.json", "sbe-verify.json", "completeness.json", "journal-verify.json")
+        for name in ("orderbook.sbe", "markets.json", "report.json", "sbe-verify.json", "completeness.json", "coverage.json", "journal-verify.json")
     },
 }
 (root / "evidence.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
@@ -238,17 +288,22 @@ else
 fi
 
 COMPLETED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-if ! python3 - "$OUT_ROOT" "$COMMIT" "$STARTED_AT" "$COMPLETED_AT" "$DURATION_SECS" "$MAX_MARKETS" "$POLYMARKET_STATUS" "$KALSHI_STATUS" <<'PY'
+if ! python3 - "$OUT_ROOT" "$COMMIT" "$STARTED_AT" "$COMPLETED_AT" "$DURATION_SECS" "$MAX_MARKETS" "$SCOPE" "$SHARDS" "$REPLICAS" "$POLYMARKET_STATUS" "$KALSHI_STATUS" <<'PY'
 import json, pathlib, sys
-out, commit, started, completed, duration, max_markets, pm_status, kalshi_status = sys.argv[1:]
+out, commit, started, completed, duration, max_markets, scope, shards, replicas, pm_status, kalshi_status = sys.argv[1:]
 root = pathlib.Path(out)
+tier = "LIVE_UNIVERSE_OK" if scope == "universe" else "LIVE_SMOKE_OK"
 manifest = {
     "schema_version": 1,
     "source_commit": commit,
     "started_at_utc": started,
     "completed_at_utc": completed,
+    "evidence_tier": tier,
+    "scope": scope,
     "duration_seconds_per_venue": int(duration),
     "max_markets_per_venue": int(max_markets),
+    "shards": int(shards),
+    "replicas": int(replicas),
     "egress_policy": "direct (application default; no proxy configured by this script)",
     "order_entry": "not used",
     "venues": {},
@@ -277,4 +332,9 @@ if [[ "$POLYMARKET_STATUS" != "verified" || "$KALSHI_STATUS" != "verified" ]]; t
   exit 2
 fi
 
+if [[ "$SCOPE" == universe ]]; then
+  echo "LIVE_UNIVERSE_OK: $OUT_ROOT"
+else
+  echo "LIVE_SMOKE_OK: $OUT_ROOT"
+fi
 echo "DUAL_VENUE_LIVE_EVIDENCE_OK: $OUT_ROOT"

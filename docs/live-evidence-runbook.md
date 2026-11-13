@@ -68,39 +68,109 @@ an evidence artifact. Do not paste secrets into logs or issue reports.
 
 ## Run both venues
 
-From the repository root:
+From the repository root, for a small smoke run:
 
 ```bash
 LIVE_DURATION_SECS=120 LIVE_MAX_MARKETS=5 scripts/run-live-evidence.sh
 ```
 
+For the full discovered universe (operator and venue limits permitting):
+
+```bash
+LIVE_EVIDENCE_SCOPE=universe LIVE_MAX_MARKETS=0 \
+LIVE_DURATION_SECS=900 scripts/run-live-evidence.sh
+```
+
 The script builds the release binary once, then runs the two venue captures
-sequentially with one shard and one websocket replica. It creates a timestamped
+sequentially. By default a smoke run uses one shard and one websocket replica.
+`LIVE_SHARDS=0` derives the shard count from the discovered symbol set, and
+`LIVE_REPLICAS` may be raised to test redundancy. It creates a timestamped
 directory under `captures/` containing, per venue:
 
 - `orderbook.sbe` — normalized FIX SBE market-data capture;
 - `markets.json` — native-to-normalized symbol metadata;
-- `report.json` — collector run and source counters;
+- `report.json` — collector run, source counters, and the acknowledged
+  subscription set;
 - `journal/` — raw websocket frames and checksummed journal manifest;
 - `sbe-verify.json` — snapshot/delta reconstruction verification;
 - `completeness.json` — per-symbol snapshot anchoring verification;
+- `coverage.json` — expected vs acknowledged vs snapshot-anchored per-symbol
+  certificate, including explicit missing and extra symbol lists;
 - `journal-verify.json` — journal checksum and finalization verification;
 - `evidence.json` — SHA-256 hashes and summarized run counters.
 
-The root `run-manifest.json` records the source commit, run times, venue
-statuses, and hashes of the two evidence manifests. It contains no API keys,
-private keys, or proxy credentials.
+The root `run-manifest.json` records the source commit, run times, evidence
+tier, scope, venue statuses, and hashes of the two evidence manifests. It
+contains no API keys, private keys, or proxy credentials.
 
 The script only marks a venue `verified` when discovery returned symbols,
 at least one exchange-originated snapshot was processed, SBE messages were
-written, snapshot/delta reconstruction is valid, each symbol's observed delta
-stream is anchored, and the raw journal finalized with nonzero verified
-records. A short run may legitimately observe zero subsequent price-level
-deltas in a quiet market; that count is recorded rather than fabricated.
+written, snapshot/delta reconstruction is valid, `coverage` reports
+`valid = true` for every expected symbol, and the raw journal finalized with
+nonzero verified records. A short run may legitimately observe zero subsequent
+price-level deltas in a quiet market; that count is recorded rather than
+fabricated.
 
-A skipped venue is not a successful dual-venue run. A failed verification is
-not a successful capture. Keep the entire output directory and publish its
-`run-manifest.json` together with the source commit when reporting results.
+### Evidence tiers
+
+The script never upgrades a small run into a universe claim:
+
+| Tier | Emitted when | Scope |
+|---|---|---|
+| `LIVE_SMOKE_OK` | Both venues pass for the selected small market set (`LIVE_EVIDENCE_SCOPE=smoke`, the default) | Selected symbols only |
+| `LIVE_UNIVERSE_OK` | Both venues pass with `LIVE_EVIDENCE_SCOPE=universe` and `LIVE_MAX_MARKETS=0`, and `coverage.expected` equals the full discovered universe | Every eligible discovered symbol |
+| `LIVE_SOAK_OK` | A full-universe run holds correctness and stability for the stated soak duration | Reserved; this script does not emit it |
+
+`LIVE_UNIVERSE_OK` requires the universe scope explicitly; the five-market
+smoke path cannot produce it. A green integration test is not an evidence
+tier either. A skipped venue is not a successful dual-venue run. A failed
+verification is not a successful capture. Keep the entire output directory and
+publish its `run-manifest.json` together with the source commit when reporting
+results.
+
+### Per-symbol coverage certificate
+
+`coverage.json` enforces one invariant for each venue:
+
+```
+expected symbols = acknowledged symbols = snapshot-anchored symbols
+```
+
+- **Expected** comes from `markets.json`, the metadata sidecar for the run's
+  selected market set.
+- **Acknowledged** is the union of each worker's last successfully applied
+  subscription set, recorded in `report.json` and mapped from native exchange
+  identifiers to normalized SBE symbols through `markets.json`. It proves the
+  session transmitted the subscription request; it is not a claim that the
+  venue replied with a wire acknowledgement.
+- **Snapshot-anchored** means the symbol appears in at least one snapshot in
+  `orderbook.sbe`. A snapshot with an empty book still counts because it
+  establishes the baseline. A symbol seen only in price-level updates does not
+  count and is listed under `observed_not_anchored`.
+
+The certificate is `valid` only when the expected set is non-empty, every
+expected symbol was acknowledged and anchored, no acknowledged symbol is
+outside the expected set, no expected symbol is duplicated, every
+acknowledged native identifier maps to metadata, and the capture decodes
+exactly as many messages as the run report's writer accepted. A truncated
+capture cannot certify as complete: bytes lost before shutdown fail the
+certificate instead of being silently absorbed. Captured symbols outside the
+expected set are listed under `anchored_not_expected` and accounted separately;
+these are typically markets retired by a later discovery round.
+
+Run the same check offline:
+
+```bash
+target/release/engineering-challenge coverage \
+  captures/live-<run>/<venue>/orderbook.sbe \
+  captures/live-<run>/<venue>/markets.json \
+  captures/live-<run>/<venue>/report.json \
+  --out captures/live-<run>/<venue>/coverage.json
+```
+
+The command exits non-zero unless the certificate is valid. A five-market
+smoke capture can therefore pass `coverage` while still being only
+`LIVE_SMOKE_OK`; the tier is about scope, not per-symbol correctness.
 
 ## Opt-in live integration tests
 
@@ -112,6 +182,10 @@ RUN_LIVE_KALSHI_TESTS=1 \
 KALSHI_READ_ONLY_ACCESS_CONFIRMED=1 \
 cargo test --test live_kalshi --locked -- --ignored --nocapture
 ```
+
+Both venue tests require every selected symbol to receive its own snapshot. A
+single snapshot for one symbol is not a pass, even if the socket is otherwise
+healthy.
 
 The workflow `.github/workflows/live.yml` uses an operator-managed self-hosted
 runner labelled `market-data-eligible`. The runner must be physically located
