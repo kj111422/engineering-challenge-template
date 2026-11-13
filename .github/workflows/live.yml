@@ -1,4 +1,4 @@
-name: Live public-feed integration
+name: Authorized live market-data integration
 
 on:
   workflow_dispatch:
@@ -6,12 +6,34 @@ on:
 permissions:
   contents: read
 
+# Live venue tests must run on an operator-managed machine whose physical
+# egress location and account are permitted by the relevant venue. Do not use
+# a hosted runner, VPN, or proxy to work around geographic restrictions.
 jobs:
-  polymarket:
-    name: Polymarket public discovery and websocket
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
+  live:
+    name: Polymarket and Kalshi read-only market data
+    # Configure this protected environment to allow only main and require
+    # reviewer approval before exposing live API credentials to the runner.
+    environment: live-market-data
+    runs-on: [self-hosted, market-data-eligible]
+    timeout-minutes: 20
+    env:
+      RUN_LIVE_TESTS: "1"
+      RUN_LIVE_KALSHI_TESTS: "1"
+      POLYMARKET_MARKET_DATA_ACCESS_CONFIRMED: ${{ vars.POLYMARKET_MARKET_DATA_ACCESS_CONFIRMED }}
+      KALSHI_API_KEY_ID: ${{ secrets.KALSHI_API_KEY_ID }}
+      KALSHI_PRIVATE_KEY_PEM: ${{ secrets.KALSHI_PRIVATE_KEY_PEM }}
+      KALSHI_READ_ONLY_ACCESS_CONFIRMED: ${{ vars.KALSHI_READ_ONLY_ACCESS_CONFIRMED }}
     steps:
+      - name: Require the protected main branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/main" || {
+            echo "Live credentials may only be used from protected main." >&2
+            exit 1
+          }
+
       - name: Check out source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -25,9 +47,23 @@ jobs:
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
-      # No credentials are used. The test is ignored by default and is enabled
-      # only in this manual workflow.
-      - name: Run public-feed integration test
-        env:
-          RUN_LIVE_TESTS: "1"
+      - name: Confirm Kalshi read-only credentials and permission gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$POLYMARKET_MARKET_DATA_ACCESS_CONFIRMED" = "1" || {
+            echo "Set POLYMARKET_MARKET_DATA_ACCESS_CONFIRMED=1 only after checking current terms and local law." >&2
+            exit 1
+          }
+          test -n "$KALSHI_API_KEY_ID" || { echo "KALSHI_API_KEY_ID secret is required" >&2; exit 1; }
+          test -n "$KALSHI_PRIVATE_KEY_PEM" || { echo "KALSHI_PRIVATE_KEY_PEM secret is required" >&2; exit 1; }
+          test "$KALSHI_READ_ONLY_ACCESS_CONFIRMED" = "1" || {
+            echo "Set the KALSHI_READ_ONLY_ACCESS_CONFIRMED Actions variable to 1 only after confirming market-data-only access is allowed for this account and runner location." >&2
+            exit 1
+          }
+
+      - name: Run Polymarket public-feed discovery and websocket tests
         run: cargo test --test live_polymarket --locked -- --ignored --nocapture
+
+      - name: Run Kalshi authenticated read-only market-data test
+        run: cargo test --test live_kalshi --locked -- --ignored --nocapture
