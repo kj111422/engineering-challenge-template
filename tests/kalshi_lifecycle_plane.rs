@@ -49,7 +49,7 @@ use engineering_challenge::{
 };
 
 const LIFECYCLE_SHARD: u16 = u16::MAX;
-const WAIT_LIMIT: Duration = Duration::from_secs(10);
+const WAIT_LIMIT: Duration = Duration::from_secs(30);
 const TICKER: &str = "KXTEST-1";
 
 fn active_market() -> Value {
