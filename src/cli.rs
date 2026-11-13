@@ -192,6 +192,27 @@ pub enum Command {
         #[arg(long, value_name = "FILE")]
         out: Option<PathBuf>,
     },
+    /// Certify per-symbol live coverage for one capture: expected symbols
+    /// from the metadata sidecar, acknowledged symbols from the run report,
+    /// and snapshot-anchored symbols from the capture. Exits non-zero unless
+    /// every expected symbol was both acknowledged and anchored.
+    Coverage {
+        /// Capture path.
+        #[arg(value_name = "SBE")]
+        input: PathBuf,
+        /// Metadata sidecar written by the collector (`markets.json`).
+        #[arg(value_name = "MARKETS_JSON")]
+        metadata: PathBuf,
+        /// Run report written by the collector (`report.json`).
+        #[arg(value_name = "REPORT_JSON")]
+        report: PathBuf,
+        /// Chunk size in bytes, or `auto`.
+        #[arg(long = "read-chunk-size", default_value = "auto")]
+        read_chunk_size: String,
+        /// Write the JSON certificate to this path in addition to stdout.
+        #[arg(long, value_name = "FILE")]
+        out: Option<PathBuf>,
+    },
     /// Measure discovery RTT and websocket timestamp latency.
     Latency {
         /// Optional path for the JSON latency report.

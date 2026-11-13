@@ -371,6 +371,10 @@ where
     let mut commands: BTreeMap<SourceId, mpsc::Sender<Control>> = BTreeMap::new();
     let mut handles: BTreeMap<SourceId, JoinHandle<()>> = BTreeMap::new();
     let mut active_sources = BTreeSet::new();
+    // Last successfully applied subscription set per source. Kept across
+    // disconnect transitions so the shutdown drain still observes every
+    // subscription that was ever in force.
+    let mut acknowledged: BTreeMap<SourceId, BTreeSet<String>> = BTreeMap::new();
     for shard in 0..shard_count {
         for replica in 0..replica_count {
             let source = SourceId::new(shard as u16, replica as u16);
@@ -446,6 +450,7 @@ where
                             &writer,
                             &commands,
                             &mut active_sources,
+                            &mut acknowledged,
                             send_timeout,
                         ).await {
                             fatal = Some(format!("{error:#}"));
@@ -660,6 +665,9 @@ where
                 active_sources.remove(&source);
             }
             Ok(Some(WorkerEvent::Status(status))) => deferred_statuses.push(status),
+            Ok(Some(WorkerEvent::Subscribed { source, symbols })) => {
+                acknowledged.insert(source, symbols.into_iter().collect());
+            }
             Ok(Some(WorkerEvent::Events { source, events })) => {
                 for event in events {
                     let outputs = core.handle_event(source, event);
@@ -749,6 +757,15 @@ where
     stop_metrics(metrics_shutdown, metrics_handle).await;
     let core_stats = core.stats();
     let sources: Vec<_> = core.statuses().values().cloned().collect();
+    // Union across shards and replicas: every symbol at least one source
+    // successfully subscribed. Native identifiers; `coverage` maps them to
+    // SBE symbols through the metadata sidecar.
+    let acknowledged_symbols: Vec<String> = acknowledged
+        .values()
+        .flat_map(|symbols| symbols.iter().cloned())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
     let mut report = RunReport::new(
         "live",
         exchange.name(),
@@ -770,6 +787,7 @@ where
     report.discovery = runtime.discovery.clone();
     report.catalog = Some(bootstrap.catalog);
     report.coverage = Some(final_coverage);
+    report.acknowledged_symbols = acknowledged_symbols;
     report.journal = journal_status;
     report.journal_verification = journal_verification;
     report.journal_consistency_error = journal_consistency_error;
@@ -888,6 +906,7 @@ async fn process_worker_event(
     writer: &WriterHandle,
     commands: &BTreeMap<SourceId, mpsc::Sender<Control>>,
     active_sources: &mut BTreeSet<SourceId>,
+    acknowledged: &mut BTreeMap<SourceId, BTreeSet<String>>,
     send_timeout: Duration,
 ) -> anyhow::Result<()> {
     match event {
@@ -902,6 +921,9 @@ async fn process_worker_event(
             let outputs = core.handle_status(status, now_us().unwrap_or(0));
             emit_outputs(writer, outputs, send_timeout).await?;
             dispatch_controls(core, commands, send_timeout).await?;
+        }
+        WorkerEvent::Subscribed { source, symbols } => {
+            acknowledged.insert(source, symbols.into_iter().collect());
         }
         WorkerEvent::Fatal { source, error } => {
             bail!("source {source} reported a fatal error: {error}");

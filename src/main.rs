@@ -9,8 +9,8 @@ use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
 use engineering_challenge::{
-    completeness, config::Settings, coordinator, inspect, journal, latency, probe, replay,
-    report::write_json_atomic, verify,
+    completeness, config::Settings, coordinator, coverage, inspect, journal, latency, probe,
+    replay, report::write_json_atomic, verify,
 };
 
 use crate::cli::{Cli, Command, JournalCommand};
@@ -92,6 +92,33 @@ async fn main() -> anyhow::Result<()> {
                 "completeness failed: {} unanchored delta(s) across {} symbol(s)",
                 summary.deltas_before_snapshot,
                 summary.unanchored_symbols
+            );
+            Ok(())
+        }
+        Command::Coverage {
+            input,
+            metadata,
+            report,
+            read_chunk_size,
+            out,
+        } => {
+            let summary = coverage::run(&input, &metadata, &report, &read_chunk_size)?;
+            if let Some(path) = out.as_deref() {
+                write_json_atomic(path, &summary).context("writing coverage certificate")?;
+            }
+            emit_json(&summary)?;
+            anyhow::ensure!(
+                summary.valid,
+                "coverage failed: expected {} symbol(s); missing_ack={}, missing_anchor={}, \
+                 ack_not_anchored={}, ack_not_expected={}, duplicate_expected={}, \
+                 unknown_ack_native={}",
+                summary.expected,
+                summary.missing_ack.count,
+                summary.missing_anchor.count,
+                summary.ack_not_anchored.count,
+                summary.ack_not_expected.count,
+                summary.duplicate_expected.count,
+                summary.unknown_ack_native.count
             );
             Ok(())
         }

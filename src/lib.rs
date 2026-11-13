@@ -4,6 +4,7 @@ pub mod collector;
 pub mod completeness;
 pub mod config;
 pub mod coordinator;
+pub mod coverage;
 pub mod egress;
 pub mod exchange;
 pub mod fixed;

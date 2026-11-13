@@ -123,6 +123,15 @@ pub struct RunReport {
     pub core: CollectorStats,
     pub writer: WriterStats,
     pub sources: Vec<SourceStatus>,
+    /// Union of the last successfully applied subscription set per source,
+    /// sorted and de-duplicated. These are native exchange identifiers; map
+    /// them to SBE symbols through the metadata sidecar.
+    ///
+    /// A subscription record proves the worker transmitted the request, not
+    /// that the venue emitted a wire acknowledgement. `coverage` separately
+    /// requires every expected symbol to be snapshot-anchored in the capture.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub acknowledged_symbols: Vec<String>,
     pub config: ReportConfig,
     /// Startup capacity plan for a live run. Replay reports do not have one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -191,6 +200,7 @@ impl RunReport {
             core,
             writer,
             sources,
+            acknowledged_symbols: Vec::new(),
             config,
             capacity: None,
             discovery: None,

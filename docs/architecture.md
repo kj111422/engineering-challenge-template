@@ -161,7 +161,7 @@ flowchart LR
 | Diagnostics | `probe.rs` | `network-probe`: stage-timed transport diagnostic, JSON report |
 | Output | `writer.rs`, `util/aligned_sbe_*.rs`, `util/dtos.rs` | Ordered SBE writes, chunk framing, supplied-schema DTOs |
 | Durability | `journal.rs`, `persistence.rs`, `report.rs` | Raw-frame journal, checkpoints, run sidecars |
-| Offline tools | `replay.rs`, `inspect.rs`, `verify.rs`, `latency.rs`, `completeness.rs` | Deterministic replay, decode, consistency, latency, per-symbol completeness accounting |
+| Offline tools | `replay.rs`, `inspect.rs`, `verify.rs`, `latency.rs`, `completeness.rs`, `coverage.rs` | Deterministic replay, decode, consistency, latency, per-symbol completeness accounting, and per-symbol live-coverage certification |
 | Operations | `metrics.rs`, `time.rs` | Counters, health/readiness, receive-time helpers |
 
 ## Current operational caveat

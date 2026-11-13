@@ -70,7 +70,7 @@ cargo run --release -- journal verify captures/journal/<run-id>
 ```
 
 Other commands: `replay`, `inspect`, `verify`, `latency`, `discover`, `journal`,
-`network-probe`, `completeness`.
+`network-probe`, `completeness`, `coverage`.
 See `config.example.toml` and `config.polymarket.example.toml`.
 
 ## Build and test
@@ -100,7 +100,7 @@ export KALSHI_PRIVATE_KEY_PATH="$HOME/.config/kalshi/private-key.pem"
 LIVE_DURATION_SECS=120 LIVE_MAX_MARKETS=5 scripts/run-live-evidence.sh
 ```
 
-The script refuses to claim a dual-venue success if either venue is skipped or a capture/journal verification fails. The manual live workflow runs the same script on the protected runner and uploads the complete `captures/` bundle as a retained artifact.
+The script refuses to claim a dual-venue success if either venue is skipped or a capture/journal verification fails. It certifies per-symbol coverage: every expected symbol in `markets.json` must appear in the run report's acknowledged subscription set and must have its own snapshot in the capture. A five-market run emits `LIVE_SMOKE_OK`, never `LIVE_UNIVERSE_OK`. To claim the universe tier, run `LIVE_EVIDENCE_SCOPE=universe LIVE_MAX_MARKETS=0 LIVE_DURATION_SECS=900 scripts/run-live-evidence.sh`; the script then requires the expected set to equal the full discovered universe. `LIVE_SOAK_OK` is reserved for a full-universe run held for the stated soak duration and is not emitted by this script. The manual live workflow runs the same script on the protected runner and uploads the complete `captures/` bundle as a retained artifact.
 
 ## Scope and provenance
 

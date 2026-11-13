@@ -18,7 +18,7 @@ use engineering_challenge::{
     exchange::{Exchange, PolymarketExchange},
     model::{ExchangeEvent, SourceId},
 };
-use tokio::time::timeout;
+use tokio::time::{Instant, timeout, timeout_at};
 
 #[tokio::test]
 #[ignore = "requires RUN_LIVE_TESTS=1 and public network access"]
@@ -63,25 +63,28 @@ async fn discovers_and_subscribes_to_public_polymarket_books() {
         .await
         .expect("subscribing");
 
-    let mut saw_snapshot = false;
-    for _ in 0..20 {
-        let frame = timeout(Duration::from_secs(10), session.next_frame())
-            .await
-            .expect("timed out waiting for a public frame")
-            .expect("reading public frame");
-        if frame.events.iter().any(|event| {
-            matches!(
-                event,
-                ExchangeEvent::Snapshot { native_symbol, .. }
-                    if desired.contains(native_symbol)
-            )
-        }) {
-            saw_snapshot = true;
-            break;
+    let mut anchored: BTreeSet<String> = BTreeSet::new();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while Instant::now() < deadline && anchored.len() < desired.len() {
+        let frame = match timeout_at(deadline, session.next_frame()).await {
+            Ok(Ok(frame)) => frame,
+            Ok(Err(error)) => panic!("public websocket frame failed: {error:?}"),
+            Err(_) => break,
+        };
+        for event in frame.events {
+            if let ExchangeEvent::Snapshot { native_symbol, .. } = event
+                && desired.contains(&native_symbol)
+            {
+                anchored.insert(native_symbol);
+            }
         }
     }
     session.close().await;
-    assert!(saw_snapshot, "no snapshot arrived for a subscribed asset");
+    let missing: Vec<_> = desired.difference(&anchored).cloned().collect();
+    assert!(
+        anchored.len() == desired.len(),
+        "every selected Polymarket asset must receive its own snapshot; missing: {missing:?}"
+    );
 }
 
 #[tokio::test]

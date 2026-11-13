@@ -147,6 +147,19 @@ pub enum WorkerEvent {
         events: Vec<ExchangeEvent>,
     },
     Status(SourceStatus),
+    /// The last subscription set this worker successfully applied to its
+    /// session. Sent after `apply_subscriptions` returns `Ok` on connect and
+    /// on control-driven reconciliation, never on periodic status. Symbols
+    /// are native exchange identifiers.
+    ///
+    /// This is a local acceptance record: it proves the worker transmitted the
+    /// subscription request, not that the venue emitted a wire
+    /// acknowledgement. Per-symbol `snapshot-anchored` evidence is what the
+    /// `coverage` command requires before certifying a universe.
+    Subscribed {
+        source: SourceId,
+        symbols: Vec<String>,
+    },
     Fatal {
         source: SourceId,
         error: String,
@@ -366,6 +379,12 @@ pub async fn run_worker(
         status.subscriptions = desired.len();
         status.reconnects = status.reconnects.max(attempts.saturating_sub(1));
         backoff = config.reconnect_base_backoff;
+        let _ = events
+            .send(WorkerEvent::Subscribed {
+                source,
+                symbols: desired.iter().cloned().collect(),
+            })
+            .await;
         let _ = events.send(WorkerEvent::Status(status.clone())).await;
         info!(%source, subscriptions = desired.len(), "source connected");
 
@@ -657,6 +676,14 @@ async fn handle_control(
                 );
                 status.last_error = Some(failure_message(&failure));
                 reconnect = true;
+            }
+            if !reconnect {
+                let _ = events
+                    .send(WorkerEvent::Subscribed {
+                        source: status.source,
+                        symbols: desired.iter().cloned().collect(),
+                    })
+                    .await;
             }
             let _ = events.send(WorkerEvent::Status(status.clone())).await;
             reconnect

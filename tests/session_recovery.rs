@@ -265,6 +265,53 @@ async fn recovery_ack_precedes_snapshot_and_uses_last_payload_fence() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn successful_subscription_is_reported_with_native_symbols() {
+    let (session, _tx, _closed, _subs) = make_session(None);
+    let factory = Arc::new(ScriptedFactory {
+        next: Arc::new(Mutex::new([session].into_iter().collect())),
+    });
+
+    let (cmd_tx, cmd_rx) = mpsc::channel(16);
+    let (evt_tx, mut evt_rx) = mpsc::channel(64);
+    let (stop_tx, stop_rx) = broadcast::channel(1);
+    let worker = tokio::spawn(run_worker(
+        factory,
+        source(),
+        cmd_rx,
+        evt_tx,
+        test_config(None),
+        stop_rx,
+    ));
+
+    cmd_tx
+        .send(Control::SetSubscriptions(BTreeSet::from([
+            "A".to_owned(),
+            "B".to_owned(),
+        ])))
+        .await
+        .unwrap();
+
+    let symbols = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match evt_rx.recv().await {
+                Some(WorkerEvent::Subscribed { source: s, symbols }) if !symbols.is_empty() => {
+                    assert_eq!(s, source());
+                    break symbols;
+                }
+                Some(_) => continue,
+                None => panic!("worker event channel closed"),
+            }
+        }
+    })
+    .await
+    .expect("subscription acknowledgement timed out");
+    assert_eq!(symbols, vec!["A".to_owned(), "B".to_owned()]);
+
+    let _ = stop_tx.send(());
+    let _ = worker.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reconnect_recovery_advances_epoch_and_resets_sequence() {
     let (session1, tx1, mut closed1, subs1) = make_session(None);
     let (session2, tx2, _closed2, subs2) = make_session(None);
