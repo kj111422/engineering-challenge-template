@@ -90,15 +90,19 @@ shards therefore carry only `orderbook_delta` subscriptions.
 The coordinator starts `collector.lifecycle_replicas` supervised lifecycle
 sockets (Kalshi only, default 1, maximum 4) alongside the book workers. Each
 socket receives the same `market_lifecycle_v2` stream; the core deduplicates
-notifications by `(market, kind, exchange timestamp)` with a bounded window,
-so each distinct notification is applied once however many lifecycle replicas
-are configured. A lifecycle event for an untracked market is never applied
-blindly: Create/Activate events request an out-of-cycle REST reconciliation
-(debounced, shared with the periodic ticker), and terminal notifications for
-untracked markets are counted in `lifecycle_unknown_symbols` rather than
-dropped. A `settled`/`determined`/`resolved`/`deactivated` notification
-retires a tracked market exactly once and emits the normal retirement
-boundary.
+notifications by `(market, kind, exchange timestamp, normalized-payload
+fingerprint)` with a bounded window, so each distinct notification is applied
+once however many lifecycle replicas are configured. A lifecycle event for an
+untracked market is never applied blindly: Create/Activate events request an
+out-of-cycle REST reconciliation (debounced, shared with the periodic ticker),
+and terminal notifications for untracked markets are counted in
+`lifecycle_unknown_symbols` rather than dropped. A `settled`/`determined`/`resolved`/`deactivated`
+notification retires a tracked market exactly once and emits the normal
+retirement boundary. Stale nonterminal backfills (exchange order older than
+the applied high-water mark for the market) are dropped and counted; terminal
+notifications are never dropped. A discovery round that started before an
+applied terminal notification cannot resurrect the market, and cannot
+overwrite lifecycle-applied metadata; a later round is authoritative again.
 
 The lifecycle plane is deliberately separate from the book plane: it has no
 order-book subscriptions, contributes nothing to the per-shard subscription

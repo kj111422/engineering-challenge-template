@@ -440,3 +440,49 @@ lifecycle command discipline), `src/collector/state/tests.rs` (dedup,
 reconciliation request, untracked terminal accounting, out-of-book-plane
 status), `src/capacity.rs` (Kalshi connection budget including the plane),
 `tests/session_recovery.rs`, `scripts/check_architecture.py`.
+
+**Semantic ordering rules.** Lifecycle correctness does not stop at
+delivery. Three rules make the merge semantics explicit:
+
+1. **Canonical event identity.** Kalshi's per-subscription `seq` cannot name
+   the same notification across replicas, so the deduplication key is
+   `(market, kind, exchange timestamp, payload fingerprint)`. The fingerprint
+   is a SHA-256 over the normalized payload (order-independent price ranges,
+   title, close time, tick size, price-level structure). Two different
+   updates for the same market with the same kind and timestamp are applied;
+   a byte-identical redelivery is dropped. Residual risk, accepted and
+   documented: the venue cannot publish two genuinely distinct updates with
+   byte-identical normalized payloads at the same timestamp — such a pair is
+   indistinguishable from redelivery by construction and is applied once.
+   Events without an exchange timestamp are never deduplicated (all
+   application paths are idempotent).
+2. **Cross-replica monotonicity.** Every applied notification advances a
+   per-market high-water mark on exchange order (venue timestamp, falling
+   back to local receive time). Nonterminal notifications older than the
+   mark are stale replica backfill and are dropped and counted
+   (`lifecycle_stale_dropped`). Terminal and deactivation notifications are
+   never dropped: they only ever remove a market, so applying one
+   out-of-order can never resurrect or corrupt state.
+3. **Reconciliation barrier.** A discovery round carries the local timestamp
+   at which its venue snapshot was taken. If a terminal lifecycle
+   notification applied during or after the snapshot, the round may not
+   re-add that market (`lifecycle_discovery_vetoes`) — a stale REST response
+   cannot resurrect a retired market into the universe. If a lifecycle
+   metadata update applied during or after the snapshot, the round preserves
+   it over the older REST record (`lifecycle_kept_metadata`); a later round
+   (started after the retirement or the update) is authoritative again.
+   Tombstones live in a bounded per-market window (4096 entries with FIFO
+   eviction) and expire naturally for any round started after them.
+
+Terminal retirement is idempotent (`remove_market` is a no-op for a market
+already absent), and untracked terminal notifications are counted in
+`lifecycle_unknown_symbols`, so a market the venue already settled can never
+be resurrected by the lifecycle plane itself; only REST reconciliation can
+reintroduce a market, which is the intended authority boundary. The
+lifecycle plane's health is reported separately (`collector_lifecycle_*`
+and the `lifecycle` readiness check): for Kalshi runs that spawned a
+lifecycle plane, an entirely disconnected plane fails `/readyz`; the REST
+reconciliation cadence still bounds universe divergence to one discovery
+interval. Lifecycle sockets close and are joined during graceful shutdown
+before the process exits, and events already accepted are applied during
+the shutdown drain.

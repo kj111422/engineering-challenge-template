@@ -177,6 +177,9 @@ struct RuntimeState {
     discovery: Option<DiscoveryStats>,
     discovery_failures: u64,
     fatal_error: Option<String>,
+    /// Supervised lifecycle sockets spawned for this run (0 when the venue
+    /// has no lifecycle plane, or none were configured).
+    lifecycle_configured: u64,
 }
 
 /// Startup subscription set and its provenance.
@@ -435,6 +438,7 @@ where
         discovery: bootstrap.discovery.clone(),
         discovery_failures: 0,
         fatal_error: None,
+        lifecycle_configured: 0,
     };
     let (metrics_shutdown, metrics_handle) = start_metrics(&settings, &registry).await?;
     let journal = start_journal(&settings, exchange.name())?;
@@ -508,6 +512,7 @@ where
             "dedicated lifecycle control plane started"
         );
     }
+    runtime.lifecycle_configured = active_lifecycle.len() as u64;
     drop(worker_event_tx);
 
     dispatch_controls(&mut core, &commands, send_timeout).await?;
@@ -649,11 +654,14 @@ where
                     }
                     Some(Ok(round)) => {
                         let DiscoveryResult { markets, stats } = round;
+                        let round_started_us = stats.started_at_us;
                         let finished_at_us = stats.finished_at_us;
                         let now = now_us().unwrap_or(started_at_us);
                         let admission = core.projected_shard_loads(&markets)
                             .and_then(|loads| capacity::plan_fixed_topology(&settings, &markets, &loads));
-                        match admission.and_then(|_| core.apply_discovery(now, markets)) {
+                        match admission
+                            .and_then(|_| core.apply_discovery_with_epoch(now, markets, Some(round_started_us)))
+                        {
                             Ok(outputs) => {
                                 if let Err(error) =
                                     emit_outputs(&writer, outputs, send_timeout).await
@@ -1115,6 +1123,11 @@ fn update_metrics(
     stale_after_us: i64,
 ) {
     let now = now_us().unwrap_or(0);
+    let lifecycle_connected = core
+        .statuses()
+        .values()
+        .filter(|status| status.source.shard == LIFECYCLE_SHARD && status.connected)
+        .count() as u64;
     let status = RuntimeStatus {
         coverage: core.coverage(now, stale_after_us),
         catalog: runtime.catalog.clone(),
@@ -1123,6 +1136,10 @@ fn update_metrics(
         persistence: persistence.status(),
         writer_healthy: writer.healthy(),
         fatal_error: runtime.fatal_error.clone(),
+        lifecycle: crate::metrics::LifecycleHealth {
+            configured: runtime.lifecycle_configured,
+            connected: lifecycle_connected,
+        },
     };
     registry.update(core.stats(), writer.stats(), core.statuses(), status);
 }

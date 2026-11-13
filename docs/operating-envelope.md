@@ -113,8 +113,11 @@ The `/readyz` endpoint enforces the following invariants before returning `200 O
 | Writer | Healthy, zero errors | `collector_writer_healthy && collector_writer_errors_total == 0` |
 | Persistence | No pending write failure | `collector_persistence_last_error == null` |
 | Fatal | No fatal error recorded | `collector_fatal_error == null` |
+| Lifecycle | Kalshi plane: ≥1 lifecycle socket connected | `collector_lifecycle_connected > 0` when `collector_lifecycle_configured > 0` |
 
 The `/livez` endpoint returns `200 OK` as long as the process can answer HTTP. The `/healthz` endpoint returns source connectivity status (`starting`/`ok`/`degraded`) and the `ready` flag from `/readyz`.
+
+When the Kalshi lifecycle plane is configured but fully disconnected, `/readyz` reports not ready (the `lifecycle` check fails). Universe membership then diverges from the authoritative catalog for at most one discovery interval: the periodic REST reconciliation (default 30s) remains the authority, and any reconnect or untracked Create/Activate forces an out-of-cycle reconciliation. Restoring lifecycle connectivity restores readiness; no state repair beyond REST reconciliation is required.
 
 ## Unresolved Gates
 

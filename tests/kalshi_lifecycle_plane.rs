@@ -584,3 +584,43 @@ async fn lifecycle_reconnect_consults_the_rest_catalog() {
     let report = finish(handle).await;
     assert!(report.core.discovery_rounds >= 2);
 }
+
+#[tokio::test]
+async fn accepted_lifecycle_events_are_applied_before_exit() {
+    let directory = tempfile::tempdir().unwrap();
+    let key_path = directory.path().join("key.pem");
+    let signing = SigningKey::from_bytes(&[13u8; 32]);
+    fs::write(
+        &key_path,
+        ed25519_dalek::pkcs8::EncodePrivateKey::to_pkcs8_pem(
+            &signing,
+            ed25519_dalek::pkcs8::spki::der::pem::LineEnding::LF,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+
+    let mock = MockKalshi::spawn(vec![active_market()]).await;
+    let mut settings = settings(&mock, directory.path());
+    settings.kalshi.private_key_path = Some(key_path);
+
+    let (done, handle) = spawn_collector(settings);
+    wait_until("book and lifecycle planes connected", || {
+        mock.state.book_connections.load(Ordering::SeqCst) == 2
+            && mock.state.lifecycle_connections.load(Ordering::SeqCst) == 2
+    })
+    .await;
+
+    mock.state.publish_lifecycle("created", "KXNEW-1");
+    wait_until("first lifecycle event applied", || {
+        mock.state.http_requests.load(Ordering::SeqCst) >= 2
+    })
+    .await;
+    // A second event published immediately before the stop signal must be
+    // applied during the shutdown drain, not lost with it.
+    mock.state.publish_lifecycle("created", "KXNEW-2");
+    sleep(Duration::from_millis(500)).await;
+    done.notify_one();
+    let report = finish(handle).await;
+    assert_eq!(report.core.lifecycle_unknown_symbols, 2);
+}
