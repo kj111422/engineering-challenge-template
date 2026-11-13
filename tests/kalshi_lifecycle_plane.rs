@@ -401,6 +401,33 @@ fn settings(mock: &MockKalshi, directory: &Path) -> Settings {
     settings
 }
 
+fn unused_address() -> SocketAddr {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("binding an ephemeral port");
+    listener
+        .local_addr()
+        .expect("reading the ephemeral address")
+}
+
+/// Read one unlabelled Prometheus gauge from the collector's `/metrics`
+/// endpoint. A missing endpoint or metric is not an error: startup and the
+/// one-second metrics refresh race the first scrape.
+async fn scrape_metric(address: SocketAddr, metric: &str) -> Option<f64> {
+    let mut stream = TcpStream::connect(address).await.ok()?;
+    let request = format!("GET /metrics HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n");
+    stream.write_all(request.as_bytes()).await.ok()?;
+    let mut response = String::new();
+    stream.read_to_string(&mut response).await.ok()?;
+    let body = response.split_once("\r\n\r\n")?.1;
+    body.lines().find_map(|line| {
+        let (name, value) = line.split_once(' ')?;
+        if name == metric {
+            value.parse().ok()
+        } else {
+            None
+        }
+    })
+}
+
 fn spawn_collector(settings: Settings) -> (Arc<Notify>, JoinHandle<anyhow::Result<RunReport>>) {
     let done = Arc::new(Notify::new());
     let done_for_run = Arc::clone(&done);
@@ -525,6 +552,8 @@ async fn terminal_settled_retires_the_market_exactly_once() {
     let mock = MockKalshi::spawn(vec![active_market()]).await;
     let mut settings = settings(&mock, directory.path());
     settings.kalshi.private_key_path = Some(key_path);
+    settings.metrics.listen = Some(unused_address());
+    let metrics_addr = settings.metrics.listen;
 
     let (done, handle) = spawn_collector(settings);
     wait_until("book and lifecycle planes connected", || {
@@ -532,6 +561,24 @@ async fn terminal_settled_retires_the_market_exactly_once() {
             && mock.state.lifecycle_connections.load(Ordering::SeqCst) == 2
     })
     .await;
+
+    // Deterministically order the collector's retirement against the book
+    // anchor: wait until the active book is anchored before the settled
+    // notification is published, so the removal boundary is emitted.
+    let deadline = std::time::Instant::now() + WAIT_LIMIT;
+    loop {
+        if let Some(addr) = metrics_addr
+            && let Some(anchored) = scrape_metric(addr, "collector_symbols_anchored").await
+            && anchored >= 1.0
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "collector did not anchor the book"
+        );
+        sleep(Duration::from_millis(25)).await;
+    }
 
     mock.state.publish_lifecycle("settled", TICKER);
     sleep(Duration::from_millis(1500)).await;
