@@ -100,7 +100,7 @@ export KALSHI_PRIVATE_KEY_PATH="$HOME/.config/kalshi/private-key.pem"
 LIVE_DURATION_SECS=120 LIVE_MAX_MARKETS=5 scripts/run-live-evidence.sh
 ```
 
-The script refuses to claim a dual-venue success if either venue is skipped or a capture/journal verification fails.
+The script refuses to claim a dual-venue success if either venue is skipped or a capture/journal verification fails. The manual live workflow runs the same script on the protected runner and uploads the complete `captures/` bundle as a retained artifact.
 
 ## Scope and provenance
 

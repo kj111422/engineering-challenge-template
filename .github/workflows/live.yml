@@ -16,7 +16,7 @@ jobs:
     # reviewer approval before exposing live API credentials to the runner.
     environment: live-market-data
     runs-on: [self-hosted, market-data-eligible]
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       RUN_LIVE_TESTS: "1"
       RUN_LIVE_KALSHI_TESTS: "1"
@@ -67,3 +67,27 @@ jobs:
 
       - name: Run Kalshi authenticated read-only market-data test
         run: cargo test --test live_kalshi --locked -- --ignored --nocapture
+
+      # The tests above prove the adapters can discover and subscribe. This
+      # step produces the retained evidence bundle: SBE captures, raw journals,
+      # reconstruction/completeness/journal verification, and run-manifest.json.
+      - name: Produce verified dual-venue evidence
+        env:
+          LIVE_DURATION_SECS: "120"
+          LIVE_MAX_MARKETS: "5"
+          # Per-run directory avoids mixing evidence with stale captures left
+          # in a self-hosted runner's persistent workspace.
+          LIVE_EVIDENCE_DIR: captures/live-${{ github.run_id }}-${{ github.run_attempt }}
+        run: scripts/run-live-evidence.sh
+
+      # Upload even on failure so a partial or failed run retains its logs and
+      # manifests for review. A missing bundle is a warning; the script's exit
+      # status is what gates the job.
+      - name: Upload the evidence bundle
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: live-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: captures/live-${{ github.run_id }}-${{ github.run_attempt }}/
+          if-no-files-found: warn
+          retention-days: 90
