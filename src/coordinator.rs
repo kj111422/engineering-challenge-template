@@ -36,6 +36,82 @@ use crate::{
     writer::WriterHandle,
 };
 
+/// Shard identifier reserved for the dedicated Kalshi lifecycle control plane.
+/// Book shards are validated to `<= 256`, so `u16::MAX` never collides with a
+/// book source. Exported for the report's source list; consumers should use
+/// `source.shard == LIFECYCLE_SHARD` to distinguish the control plane.
+pub const LIFECYCLE_SHARD: u16 = u16::MAX;
+
+/// Debounce for lifecycle-triggered discovery reconciliation, so a burst of
+/// notifications cannot spawn overlapping REST rounds.
+const FORCED_RECONCILE_COOLDOWN_US: i64 = 5_000_000;
+
+/// Owns the shared REST-discovery in-flight state and spawns reconciliation
+/// rounds off the event loop. Used by the periodic ticker and by the lifecycle
+/// control plane: a lifecycle event for an untracked market, or a lifecycle
+/// socket reconnecting after missed notifications, requests an out-of-cycle
+/// round.
+struct DiscoveryPlane {
+    exchange: Arc<dyn Exchange>,
+    max_markets: usize,
+    tx: mpsc::Sender<anyhow::Result<DiscoveryResult>>,
+    in_flight: bool,
+    last_forced_us: i64,
+}
+
+impl DiscoveryPlane {
+    fn new(
+        exchange: Arc<dyn Exchange>,
+        max_markets: usize,
+        tx: mpsc::Sender<anyhow::Result<DiscoveryResult>>,
+    ) -> Self {
+        Self {
+            exchange,
+            max_markets,
+            tx,
+            in_flight: false,
+            last_forced_us: 0,
+        }
+    }
+
+    /// Fire a discovery round unless one is already in flight or the last
+    /// forced round started less than `min_gap_us` ago. Returns true when a
+    /// round was spawned.
+    fn request(&mut self, min_gap_us: i64) -> bool {
+        if self.in_flight {
+            return false;
+        }
+        let now = now_us().unwrap_or(i64::MAX);
+        if now - self.last_forced_us < min_gap_us {
+            return false;
+        }
+        self.in_flight = true;
+        self.last_forced_us = now;
+        spawn_discovery_round(&self.exchange, self.max_markets, &self.tx);
+        true
+    }
+
+    fn mark_finished(&mut self) {
+        self.in_flight = false;
+    }
+}
+
+fn spawn_discovery_round(
+    exchange: &Arc<dyn Exchange>,
+    max_markets: usize,
+    result_tx: &mpsc::Sender<anyhow::Result<DiscoveryResult>>,
+) {
+    let exchange = Arc::clone(exchange);
+    let result_tx = result_tx.clone();
+    // The release profile uses panic=abort, so catch_unwind cannot provide
+    // recovery there. A panic is process-fatal and systemd restarts from a
+    // clean state; ordinary discovery failures use Result.
+    tokio::spawn(async move {
+        let result = exchange.discover_markets_with_stats(max_markets).await;
+        let _ = result_tx.send(result).await;
+    });
+}
+
 /// Build the selected exchange adapter. `require_auth` is true for live
 /// collection and false for public discovery-only commands.
 pub fn build_exchange(
@@ -101,6 +177,9 @@ struct RuntimeState {
     discovery: Option<DiscoveryStats>,
     discovery_failures: u64,
     fatal_error: Option<String>,
+    /// Supervised lifecycle sockets spawned for this run (0 when the venue
+    /// has no lifecycle plane, or none were configured).
+    lifecycle_configured: u64,
 }
 
 /// Startup subscription set and its provenance.
@@ -359,6 +438,7 @@ where
         discovery: bootstrap.discovery.clone(),
         discovery_failures: 0,
         fatal_error: None,
+        lifecycle_configured: 0,
     };
     let (metrics_shutdown, metrics_handle) = start_metrics(&settings, &registry).await?;
     let journal = start_journal(&settings, exchange.name())?;
@@ -392,6 +472,47 @@ where
             handles.insert(source, handle);
         }
     }
+    // Dedicated lifecycle control plane. One supervised socket per configured
+    // lifecycle replica, carrying `market_lifecycle_v2` only; book shards
+    // never see the lifecycle channel. A venue without a separate lifecycle
+    // channel (or missing credentials) returns no factory and no sockets are
+    // spawned.
+    let lifecycle_factory = exchange.clone().lifecycle_session_factory();
+    let lifecycle_replicas = if lifecycle_factory.is_some() {
+        settings.collector.lifecycle_replicas
+    } else {
+        0
+    };
+    let mut active_lifecycle = BTreeSet::new();
+    if let Some(lifecycle_factory) = lifecycle_factory {
+        for index in 0..lifecycle_replicas {
+            let Ok(index) = u16::try_from(index) else {
+                break;
+            };
+            let source = SourceId::new(LIFECYCLE_SHARD, index);
+            // The command channel keeps the worker's command drain alive; no
+            // book-plane control is ever dispatched to this source.
+            let (command_tx, command_rx) = mpsc::channel::<Control>(8);
+            commands.insert(source, command_tx);
+            let handle = tokio::spawn(run_worker(
+                Arc::clone(&lifecycle_factory),
+                source,
+                command_rx,
+                worker_event_tx.clone(),
+                worker_config.clone(),
+                shutdown_tx.subscribe(),
+            ));
+            handles.insert(source, handle);
+            active_lifecycle.insert(source);
+        }
+    }
+    if !active_lifecycle.is_empty() {
+        info!(
+            lifecycle_connections = active_lifecycle.len(),
+            "dedicated lifecycle control plane started"
+        );
+    }
+    runtime.lifecycle_configured = active_lifecycle.len() as u64;
     drop(worker_event_tx);
 
     dispatch_controls(&mut core, &commands, send_timeout).await?;
@@ -429,7 +550,11 @@ where
     flush_ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
     flush_ticker.tick().await;
     let (discovery_tx, mut discovery_rx) = mpsc::channel::<anyhow::Result<DiscoveryResult>>(1);
-    let mut discovery_in_flight = false;
+    let mut discovery = DiscoveryPlane::new(
+        Arc::clone(&exchange),
+        settings.collector.max_markets,
+        discovery_tx,
+    );
 
     let mut shutdown = std::pin::pin!(shutdown);
 
@@ -451,11 +576,14 @@ where
                             &commands,
                             &mut active_sources,
                             &mut acknowledged,
+                            &mut discovery,
                             send_timeout,
                         ).await {
                             fatal = Some(format!("{error:#}"));
                             break;
                         }
+                        // Book-plane collapse is fatal even if the lifecycle
+                        // control plane is still connected.
                         if active_sources.is_empty() {
                             fatal = Some("all websocket sources stopped".to_owned());
                             break;
@@ -494,23 +622,10 @@ where
                 // Run REST discovery off the event loop. Paginating thousands
                 // of markets while holding this loop would stop draining
                 // websocket events and can cause avoidable gaps.
-                if !discovery_in_flight {
-                    let exchange = Arc::clone(&exchange);
-                    let max_markets = settings.collector.max_markets;
-                    let result_tx = discovery_tx.clone();
-                    discovery_in_flight = true;
-                    tokio::spawn(async move {
-                        // The release profile uses panic=abort,
-                        // so catch_unwind cannot provide recovery there. A
-                        // panic is process-fatal and systemd restarts from a
-                        // clean state; ordinary discovery failures use Result.
-                        let result = exchange.discover_markets_with_stats(max_markets).await;
-                        let _ = result_tx.send(result).await;
-                    });
-                }
+                let _ = discovery.request(0);
             }
             result = discovery_rx.recv() => {
-                discovery_in_flight = false;
+                discovery.mark_finished();
                 match result {
                     Some(Ok(round))
                         if round.markets.is_empty()
@@ -539,11 +654,14 @@ where
                     }
                     Some(Ok(round)) => {
                         let DiscoveryResult { markets, stats } = round;
+                        let round_started_us = stats.started_at_us;
                         let finished_at_us = stats.finished_at_us;
                         let now = now_us().unwrap_or(started_at_us);
                         let admission = core.projected_shard_loads(&markets)
                             .and_then(|loads| capacity::plan_fixed_topology(&settings, &markets, &loads));
-                        match admission.and_then(|_| core.apply_discovery(now, markets)) {
+                        match admission
+                            .and_then(|_| core.apply_discovery_with_epoch(now, markets, Some(round_started_us)))
+                        {
                             Ok(outputs) => {
                                 if let Err(error) =
                                     emit_outputs(&writer, outputs, send_timeout).await
@@ -659,10 +777,11 @@ where
     // otherwise invalidate the books that the final snapshot must capture.
     let mut deferred_statuses = Vec::new();
     let drain_deadline = tokio::time::Instant::now() + send_timeout;
-    'drain: while !active_sources.is_empty() {
+    'drain: while !active_sources.is_empty() || !active_lifecycle.is_empty() {
         match timeout_at(drain_deadline, worker_event_rx.recv()).await {
             Ok(Some(WorkerEvent::Stopped { source })) => {
                 active_sources.remove(&source);
+                active_lifecycle.remove(&source);
             }
             Ok(Some(WorkerEvent::Status(status))) => deferred_statuses.push(status),
             Ok(Some(WorkerEvent::Subscribed { source, symbols })) => {
@@ -900,6 +1019,7 @@ async fn stop_metrics(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn process_worker_event(
     event: WorkerEvent,
     core: &mut CollectorCore,
@@ -907,6 +1027,7 @@ async fn process_worker_event(
     commands: &BTreeMap<SourceId, mpsc::Sender<Control>>,
     active_sources: &mut BTreeSet<SourceId>,
     acknowledged: &mut BTreeMap<SourceId, BTreeSet<String>>,
+    discovery: &mut DiscoveryPlane,
     send_timeout: Duration,
 ) -> anyhow::Result<()> {
     match event {
@@ -915,11 +1036,25 @@ async fn process_worker_event(
                 let outputs = core.handle_event(source, event);
                 emit_outputs(writer, outputs, send_timeout).await?;
             }
+            // The lifecycle control plane saw a market the universe does not
+            // track; pull the authoritative catalog rather than waiting for
+            // the next ticker.
+            if core.take_lifecycle_reconcile_request() {
+                discovery.request(FORCED_RECONCILE_COOLDOWN_US);
+            }
             dispatch_controls(core, commands, send_timeout).await?;
         }
         WorkerEvent::Status(status) => {
+            let lifecycle_reconnect =
+                status.source.shard == LIFECYCLE_SHARD && status.connected && status.reconnects > 0;
             let outputs = core.handle_status(status, now_us().unwrap_or(0));
             emit_outputs(writer, outputs, send_timeout).await?;
+            if lifecycle_reconnect {
+                // The event stream is incomplete after a disconnect; the
+                // REST catalog is the source of truth for what changed
+                // while the control socket was down.
+                discovery.request(0);
+            }
             dispatch_controls(core, commands, send_timeout).await?;
         }
         WorkerEvent::Subscribed { source, symbols } => {
@@ -988,6 +1123,11 @@ fn update_metrics(
     stale_after_us: i64,
 ) {
     let now = now_us().unwrap_or(0);
+    let lifecycle_connected = core
+        .statuses()
+        .values()
+        .filter(|status| status.source.shard == LIFECYCLE_SHARD && status.connected)
+        .count() as u64;
     let status = RuntimeStatus {
         coverage: core.coverage(now, stale_after_us),
         catalog: runtime.catalog.clone(),
@@ -996,6 +1136,10 @@ fn update_metrics(
         persistence: persistence.status(),
         writer_healthy: writer.healthy(),
         fatal_error: runtime.fatal_error.clone(),
+        lifecycle: crate::metrics::LifecycleHealth {
+            configured: runtime.lifecycle_configured,
+            connected: lifecycle_connected,
+        },
     };
     registry.update(core.stats(), writer.stats(), core.statuses(), status);
 }

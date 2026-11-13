@@ -1473,3 +1473,339 @@ fn terminal_lifecycle_removes_market_without_discontinuity_incident() {
     assert!(!core.markets.contains_key("A"));
     assert_eq!(core.stats().discontinuity_incidents, incident_count_before);
 }
+
+fn lifecycle_kind(native: &str, kind: LifecycleKind, exchange_ts_us: Option<i64>) -> ExchangeEvent {
+    ExchangeEvent::Lifecycle {
+        native_symbol: native.to_owned(),
+        kind,
+        close_time_us: None,
+        title: None,
+        tick_size_us: None,
+        price_ranges: None,
+        price_level_structure: None,
+        meta: EventMeta {
+            received_at_us: NOW,
+            exchange_ts_us,
+            seq: Some(1),
+            clock: None,
+            connection_epoch: 0,
+            receive_seq: 0,
+        },
+    }
+}
+
+#[test]
+fn lifecycle_terminal_is_applied_once_across_connections() {
+    let mut core = core();
+    discover_one(&mut core);
+    core.handle_event(SOURCE_A, snapshot_event("A", 400_000, 600_000, 0));
+
+    let first = core.handle_event(
+        SOURCE_A,
+        lifecycle_kind("A", LifecycleKind::Determined, Some(123_456)),
+    );
+    assert_eq!(core.stats().lifecycle_events, 1);
+    assert_eq!(core.stats().removed_symbols, 1);
+    assert_eq!(first.len(), 1);
+
+    // The same venue notification arrives on the second lifecycle replica.
+    let second = core.handle_event(
+        SOURCE_B,
+        lifecycle_kind("A", LifecycleKind::Determined, Some(123_456)),
+    );
+    assert!(second.is_empty());
+    assert_eq!(core.stats().lifecycle_events, 1);
+    assert_eq!(core.stats().lifecycle_duplicates, 1);
+    assert_eq!(core.stats().removed_symbols, 1);
+}
+
+#[test]
+fn lifecycle_created_on_untracked_market_requests_reconciliation() {
+    let mut core = core();
+
+    let outputs = core.handle_event(
+        SOURCE_A,
+        lifecycle_kind("NEW", LifecycleKind::Created, Some(100)),
+    );
+    assert!(outputs.is_empty());
+    assert_eq!(core.stats().lifecycle_unknown_symbols, 1);
+    assert!(core.take_lifecycle_reconcile_request());
+    assert!(!core.take_lifecycle_reconcile_request());
+
+    // The duplicate delivery on the second control socket does not re-arm.
+    let _ = core.handle_event(
+        SOURCE_B,
+        lifecycle_kind("NEW", LifecycleKind::Created, Some(100)),
+    );
+    assert!(!core.take_lifecycle_reconcile_request());
+    assert_eq!(core.stats().lifecycle_duplicates, 1);
+    assert_eq!(core.stats().lifecycle_unknown_symbols, 1);
+}
+
+#[test]
+fn lifecycle_terminal_on_untracked_market_is_counted_without_reconciliation() {
+    let mut core = core();
+
+    let _ = core.handle_event(
+        SOURCE_A,
+        lifecycle_kind("GONE", LifecycleKind::Settled, Some(200)),
+    );
+    assert_eq!(core.stats().lifecycle_unknown_symbols, 1);
+    assert!(!core.take_lifecycle_reconcile_request());
+}
+
+#[test]
+fn lifecycle_without_exchange_timestamp_applies_every_time() {
+    let mut core = core();
+    discover_one(&mut core);
+
+    let _ = core.handle_event(
+        SOURCE_A,
+        lifecycle_kind("A", LifecycleKind::MetadataUpdated, None),
+    );
+    let _ = core.handle_event(
+        SOURCE_A,
+        lifecycle_kind("A", LifecycleKind::MetadataUpdated, None),
+    );
+    assert_eq!(core.stats().lifecycle_events, 2);
+    assert_eq!(core.stats().lifecycle_duplicates, 0);
+}
+
+#[test]
+fn out_of_book_plane_status_is_tracked_without_opening_incidents() {
+    let mut core = core();
+    discover_one(&mut core);
+
+    let lifecycle_source = SourceId::new(u16::MAX, 0);
+    let mut status = SourceStatus::new(lifecycle_source);
+    status.connected = true;
+    status.reconnects = 2;
+    let outputs = core.handle_status(status, NOW + 5_000_000);
+    assert!(outputs.is_empty());
+    assert!(core.statuses().contains_key(&lifecycle_source));
+
+    let mut status = SourceStatus::new(lifecycle_source);
+    status.connected = false;
+    let outputs = core.handle_status(status, NOW + 6_000_000);
+    assert!(outputs.is_empty());
+    assert_eq!(core.stats().discontinuity_incidents, 0);
+    assert!(core.statuses().contains_key(&lifecycle_source));
+}
+
+#[test]
+fn two_different_payloads_with_same_kind_and_timestamp_are_both_applied() {
+    let mut core = core();
+    discover_one(&mut core);
+
+    let base = |tick_size_us: i64| ExchangeEvent::Lifecycle {
+        native_symbol: "A".to_owned(),
+        kind: LifecycleKind::PriceStructureUpdated,
+        close_time_us: None,
+        title: Some("Title".to_owned()),
+        tick_size_us: Some(tick_size_us),
+        price_ranges: None,
+        price_level_structure: None,
+        meta: EventMeta {
+            received_at_us: NOW,
+            exchange_ts_us: Some(NOW + 1_000_000),
+            seq: Some(7),
+            clock: None,
+            connection_epoch: 0,
+            receive_seq: 0,
+        },
+    };
+    let _ = core.handle_event(SOURCE_A, base(1_000));
+    let _ = core.handle_event(SOURCE_B, base(2_000));
+
+    assert_eq!(core.stats().lifecycle_events, 2);
+    assert_eq!(core.stats().lifecycle_duplicates, 0);
+    assert_eq!(core.market_infos()[0].tick_size_us, Some(2_000));
+}
+
+#[test]
+fn out_of_order_nonterminal_lifecycle_is_dropped_not_applied() {
+    let mut core = core();
+    discover_one(&mut core);
+
+    let first = ExchangeEvent::Lifecycle {
+        native_symbol: "A".to_owned(),
+        kind: LifecycleKind::MetadataUpdated,
+        close_time_us: None,
+        title: Some("Newer".to_owned()),
+        tick_size_us: None,
+        price_ranges: None,
+        price_level_structure: None,
+        meta: EventMeta {
+            received_at_us: NOW,
+            exchange_ts_us: Some(NOW + 2_000_000),
+            seq: Some(4),
+            clock: None,
+            connection_epoch: 0,
+            receive_seq: 0,
+        },
+    };
+    let mut stale = first.clone();
+    let stale_title = "Older".to_owned();
+    if let ExchangeEvent::Lifecycle {
+        ref mut title,
+        ref mut meta,
+        ..
+    } = stale
+    {
+        *title = Some(stale_title);
+        meta.received_at_us = NOW + 10;
+        meta.exchange_ts_us = Some(NOW + 1_000_000);
+    }
+
+    let _ = core.handle_event(SOURCE_A, first);
+    let _ = core.handle_event(SOURCE_B, stale);
+
+    assert_eq!(core.market_infos()[0].title.as_deref(), Some("Newer"));
+    assert_eq!(core.stats().lifecycle_stale_dropped, 1);
+    assert_eq!(core.stats().lifecycle_events, 1);
+}
+
+#[test]
+fn stale_terminal_lifecycle_is_still_applied() {
+    let mut core = core();
+    discover_one(&mut core);
+    core.handle_event(SOURCE_A, snapshot_event("A", 400_000, 600_000, 0));
+
+    let _ = core.handle_event(
+        SOURCE_A,
+        lifecycle_kind(
+            "A",
+            LifecycleKind::PriceStructureUpdated,
+            Some(NOW + 3_000_000),
+        ),
+    );
+    assert!(core.markets.contains_key("A"));
+
+    // A replica backfill of an older terminal notification must still retire
+    // the market: terminal notifications only ever remove.
+    let _ = core.handle_event(
+        SOURCE_B,
+        lifecycle_kind("A", LifecycleKind::Determined, Some(NOW + 1_000_000)),
+    );
+    assert!(!core.markets.contains_key("A"));
+    assert_eq!(core.stats().lifecycle_stale_dropped, 0);
+}
+
+#[test]
+fn reconciliation_older_round_cannot_resurrect_lifecycle_retired_market() {
+    let mut core = core();
+    discover_one(&mut core);
+    core.handle_event(SOURCE_A, snapshot_event("A", 400_000, 600_000, 0));
+    core.handle_event(
+        SOURCE_A,
+        lifecycle_kind("A", LifecycleKind::Settled, Some(NOW + 2_000_000)),
+    );
+    assert!(!core.markets.contains_key("A"));
+
+    // A discovery round whose snapshot was taken before the retirement may
+    // still list the market; the barrier must veto re-adding it.
+    let outputs = core
+        .apply_discovery_with_epoch(NOW + 3_000_000, vec![market("A")], Some(NOW))
+        .unwrap();
+    assert!(outputs.is_empty());
+    assert!(!core.markets.contains_key("A"));
+    assert_eq!(core.stats().lifecycle_discovery_vetoes, 1);
+
+    // A round started after the retirement is authoritative again.
+    let _ = core
+        .apply_discovery_with_epoch(NOW + 4_000_000, vec![market("A")], Some(NOW + 3_000_000))
+        .unwrap();
+    assert!(core.markets.contains_key("A"));
+}
+
+#[test]
+fn reconciliation_older_round_keeps_lifecycle_metadata() {
+    let mut core = core();
+    discover_one(&mut core);
+
+    let lifecycle_title = "Lifecycle title".to_owned();
+    let _ = core.handle_event(
+        SOURCE_A,
+        ExchangeEvent::Lifecycle {
+            native_symbol: "A".to_owned(),
+            kind: LifecycleKind::MetadataUpdated,
+            close_time_us: None,
+            title: Some(lifecycle_title.clone()),
+            tick_size_us: None,
+            price_ranges: None,
+            price_level_structure: None,
+            meta: EventMeta {
+                received_at_us: NOW,
+                exchange_ts_us: Some(NOW + 2_000_000),
+                seq: Some(1),
+                clock: None,
+                connection_epoch: 0,
+                receive_seq: 0,
+            },
+        },
+    );
+
+    // A round whose snapshot predates the lifecycle metadata update keeps it.
+    let mut stale = market("A");
+    stale.title = Some("Stale REST title".to_owned());
+    let _ = core
+        .apply_discovery_with_epoch(NOW + 3_000_000, vec![stale], Some(NOW))
+        .unwrap();
+    assert_eq!(
+        core.market_infos()[0].title.as_deref(),
+        Some("Lifecycle title")
+    );
+    assert_eq!(core.stats().lifecycle_kept_metadata, 1);
+
+    // A round whose snapshot postdates it is authoritative.
+    let mut fresh = market("A");
+    fresh.title = Some("Fresh REST title".to_owned());
+    let _ = core
+        .apply_discovery_with_epoch(NOW + 4_000_000, vec![fresh], Some(NOW + 3_000_000))
+        .unwrap();
+    assert_eq!(
+        core.market_infos()[0].title.as_deref(),
+        Some("Fresh REST title")
+    );
+}
+
+#[test]
+fn duplicate_outside_the_dedup_window_reapplies_idempotently() {
+    let mut core = core();
+
+    for index in 0..LIFECYCLE_SEEN_CAPACITY + 1 {
+        let ts = NOW + i64::try_from(index).unwrap() * 1_000_000;
+        let _ = core.handle_event(
+            SOURCE_A,
+            lifecycle_kind(&format!("M{index}"), LifecycleKind::Created, Some(ts)),
+        );
+    }
+    let applied = core.stats().lifecycle_events;
+
+    // The oldest entry has been evicted; redelivery after eviction re-applies
+    // the (unknown, no-op) event instead of panicking or being misclassified.
+    let _ = core.handle_event(
+        SOURCE_A,
+        lifecycle_kind("M0", LifecycleKind::Created, Some(NOW)),
+    );
+    assert_eq!(core.stats().lifecycle_events, applied + 1);
+    assert_eq!(core.stats().lifecycle_duplicates, 0);
+}
+
+#[test]
+fn untracked_terminal_after_created_does_not_resurrect_market() {
+    let mut core = core();
+    core.handle_event(
+        SOURCE_A,
+        lifecycle_kind("A", LifecycleKind::Created, Some(NOW + 1_000_000)),
+    );
+    let _ = core.handle_event(
+        SOURCE_B,
+        lifecycle_kind("A", LifecycleKind::Settled, Some(NOW + 2_000_000)),
+    );
+    // The market never entered the universe (the created event predates REST
+    // eligibility); the terminal event still clears and counts it.
+    assert!(!core.markets.contains_key("A"));
+    assert_eq!(core.stats().lifecycle_unknown_symbols, 2);
+    assert!(core.take_lifecycle_reconcile_request());
+}

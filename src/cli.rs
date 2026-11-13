@@ -108,6 +108,11 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub replicas: Option<usize>,
 
+    /// Kalshi only: dedicated market-lifecycle control-plane sockets
+    /// (market_lifecycle_v2). Book shards never carry lifecycle subscriptions.
+    #[arg(long, global = true, value_name = "N")]
+    pub lifecycle_replicas: Option<usize>,
+
     #[arg(long, global = true, value_name = "HOST:PORT")]
     pub metrics_listen: Option<SocketAddr>,
 
@@ -328,6 +333,9 @@ impl Cli {
         }
         if let Some(replicas) = self.replicas {
             settings.collector.replicas = replicas;
+        }
+        if let Some(lifecycle_replicas) = self.lifecycle_replicas {
+            settings.collector.lifecycle_replicas = lifecycle_replicas;
         }
         if let Some(listen) = self.metrics_listen {
             settings.metrics.listen = Some(listen);

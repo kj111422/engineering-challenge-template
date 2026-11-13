@@ -113,6 +113,18 @@ pub trait Exchange: Send + Sync + 'static {
 
     /// Build the factory used by websocket source workers.
     fn session_factory(self: Arc<Self>) -> Arc<dyn SessionFactory>;
+
+    /// Optional dedicated market-lifecycle control plane.
+    ///
+    /// Venues with a separate lifecycle channel return a factory whose
+    /// sessions subscribe only to that channel. The coordinator spawns
+    /// `collector.lifecycle_replicas` workers from it; book shards never
+    /// carry lifecycle subscriptions. Returns `None` (the default) for
+    /// venues without a separate lifecycle channel, or when the lifecycle
+    /// plane cannot operate (for example, missing credentials).
+    fn lifecycle_session_factory(self: Arc<Self>) -> Option<Arc<dyn SessionFactory>> {
+        None
+    }
 }
 
 pub use kalshi::{KalshiExchange, KalshiSessionFactory};

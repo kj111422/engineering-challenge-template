@@ -174,6 +174,24 @@ impl SessionFactory for KalshiExchange {
     }
 }
 
+/// Which control/data plane a Kalshi websocket session serves.
+///
+/// `Book` sessions carry order-book subscriptions only. `Lifecycle` sessions
+/// carry `market_lifecycle_v2` only and are created exclusively by the
+/// dedicated lifecycle control plane; they never see order-book traffic and
+/// never report into the book-subscription universe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SessionMode {
+    Book,
+    Lifecycle,
+}
+
+/// Distinct pinned-port ordinal range for the lifecycle control plane. Book
+/// ordinals are `shard * 256 + replica` (<= 65539 at the validated 256/4
+/// bound); lifecycle ordinals start here so pinned source ports never
+/// collide.
+const LIFECYCLE_ORDINAL_BASE: u32 = 16_000_000;
+
 struct OrderbookSubscription {
     sid: i64,
     markets: BTreeSet<String>,
@@ -192,6 +210,7 @@ pub struct KalshiSession {
     settings: KalshiSettings,
     auth: Arc<KalshiAuth>,
     stream: Option<WsStream>,
+    mode: SessionMode,
     next_id: u64,
     desired: BTreeSet<String>,
     orderbook_subs: Vec<OrderbookSubscription>,
@@ -216,12 +235,25 @@ impl KalshiSession {
         auth: Arc<KalshiAuth>,
         connect_options: ConnectOptions,
     ) -> Self {
+        Self::new_with_mode(settings, auth, connect_options, SessionMode::Book)
+    }
+
+    fn new_with_mode(
+        settings: KalshiSettings,
+        auth: Arc<KalshiAuth>,
+        connect_options: ConnectOptions,
+        mode: SessionMode,
+    ) -> Self {
         let batch_size = settings.batch_size.max(1);
-        let ws_url = settings.environment.ws_url().to_owned();
+        let ws_url = settings
+            .ws_url
+            .clone()
+            .unwrap_or_else(|| settings.environment.ws_url().to_owned());
         Self {
             settings,
             auth,
             stream: None,
+            mode,
             next_id: 1,
             desired: BTreeSet::new(),
             orderbook_subs: Vec::new(),
@@ -547,11 +579,25 @@ impl MarketDataSession for KalshiSession {
         &mut self,
         desired: &BTreeSet<String>,
     ) -> Result<(), SessionFailure> {
-        self.desired = desired.clone();
-        if !self.lifecycle_subscribed {
-            self.send_lifecycle_subscribe().await?;
+        match self.mode {
+            SessionMode::Book => {
+                // Order-book sessions never subscribe to the market-lifecycle
+                // channel; the dedicated lifecycle control plane owns it.
+                self.desired = desired.clone();
+                self.reconcile().await
+            }
+            SessionMode::Lifecycle => {
+                // The lifecycle plane carries no order-book subscriptions.
+                // `desired` is intentionally ignored so a stray
+                // SetSubscriptions can never fan the book universe into the
+                // control socket.
+                self.desired.clear();
+                if !self.lifecycle_subscribed {
+                    self.send_lifecycle_subscribe().await?;
+                }
+                Ok(())
+            }
         }
-        self.reconcile().await
     }
 
     async fn next_frame(&mut self) -> Result<SessionFrame, SessionFailure> {
@@ -600,6 +646,14 @@ impl MarketDataSession for KalshiSession {
         })?;
         match message {
             KalshiMessage::Snapshot { sid, seq, event } => {
+                if self.mode == SessionMode::Lifecycle {
+                    return Ok(ignored_payload_frame(
+                        kind,
+                        &text,
+                        received_at_us,
+                        "unexpected_orderbook_frame",
+                    ));
+                }
                 if !self.seq.on_snapshot(sid, seq) {
                     // A stale or duplicate snapshot is valid JSON the venue
                     // sent; keep the exact bytes in the journal and move on.
@@ -622,6 +676,14 @@ impl MarketDataSession for KalshiSession {
                 ))
             }
             KalshiMessage::Delta { sid, seq, event } => {
+                if self.mode == SessionMode::Lifecycle {
+                    return Ok(ignored_payload_frame(
+                        kind,
+                        &text,
+                        received_at_us,
+                        "unexpected_orderbook_frame",
+                    ));
+                }
                 self.seq.on_delta(sid, seq).map_err(|error| {
                     SessionFailure::protocol_with_frame(
                         anyhow::anyhow!(error),
@@ -880,6 +942,13 @@ impl MarketDataSession for KalshiSession {
     }
 
     async fn request_snapshot(&mut self, symbols: &[String]) -> Result<(), SessionFailure> {
+        if self.mode == SessionMode::Lifecycle {
+            // The lifecycle plane subscribes to no books; there is nothing
+            // to snapshot. A no-op (not an error) so a misrouted probe can
+            // never escalate the control socket into a reconnect loop.
+            let _ = symbols;
+            return Ok(());
+        }
         let wanted: BTreeSet<&str> = symbols.iter().map(String::as_str).collect();
         let requests: Vec<(i64, Vec<String>)> = self
             .orderbook_subs
@@ -912,6 +981,48 @@ impl MarketDataSession for KalshiSession {
         self.seq.clear();
         self.lifecycle_subscribed = false;
         self.lifecycle_sid = None;
+    }
+}
+
+/// Factory for the dedicated lifecycle control plane. Creates sessions that
+/// subscribe only to `market_lifecycle_v2`; book shards are built by the
+/// `SessionFactory for KalshiExchange` instead.
+pub(crate) struct LifecycleSessionFactory {
+    settings: KalshiSettings,
+    auth: Arc<KalshiAuth>,
+    network: NetworkSettings,
+}
+
+impl LifecycleSessionFactory {
+    pub(crate) fn new(
+        settings: KalshiSettings,
+        auth: Arc<KalshiAuth>,
+        network: NetworkSettings,
+    ) -> Self {
+        Self {
+            settings,
+            auth,
+            network,
+        }
+    }
+}
+
+#[async_trait]
+impl SessionFactory for LifecycleSessionFactory {
+    async fn create_session(&self, source: SourceId) -> anyhow::Result<Box<dyn MarketDataSession>> {
+        let ordinal = LIFECYCLE_ORDINAL_BASE.saturating_add(u32::from(source.replica));
+        let connect_options = self
+            .network
+            .connect_options()
+            .with_context(|| format!("deriving lifecycle connect options for source {source}"))?
+            .for_ordinal(ordinal)
+            .with_context(|| format!("deriving lifecycle connect options for source {source}"))?;
+        Ok(Box::new(KalshiSession::new_with_mode(
+            self.settings.clone(),
+            Arc::clone(&self.auth),
+            connect_options,
+            SessionMode::Lifecycle,
+        )))
     }
 }
 
@@ -968,48 +1079,35 @@ mod tests {
         tokio_tungstenite::accept_async(stream).await.unwrap()
     }
 
-    /// Acknowledge the lifecycle and orderbook subscribe commands sent by
-    /// `apply_subscriptions`, returning the orderbook sid.
+    /// Acknowledge the orderbook subscribe command sent by
+    /// `apply_subscriptions`, returning the sid. Book sessions carry no
+    /// lifecycle subscription; the lifecycle plane is exercised by the
+    /// dedicated control-plane tests.
     async fn acknowledge_initial_subscriptions(
         ws: &mut ServerWs,
         orderbook_sid: i64,
     ) -> (i64, Vec<String>) {
-        let mut orderbook = None;
-        for _ in 0..2 {
-            let command = read_json(ws).await;
-            assert_eq!(command["cmd"], "subscribe");
-            let channel = command["params"]["channels"][0].as_str().unwrap();
-            let id = command["id"].as_u64().unwrap();
-            if channel == "orderbook_delta" {
-                let markets: Vec<String> = command["params"]["market_tickers"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|value| value.as_str().unwrap().to_owned())
-                    .collect();
-                orderbook = Some(markets);
-                send_json(
-                    ws,
-                    json!({
-                        "id": id,
-                        "type": "subscribed",
-                        "msg": {"channel": "orderbook_delta", "sid": orderbook_sid}
-                    }),
-                )
-                .await;
-            } else {
-                send_json(
-                    ws,
-                    json!({
-                        "id": id,
-                        "type": "subscribed",
-                        "msg": {"channel": "market_lifecycle_v2", "sid": 1}
-                    }),
-                )
-                .await;
-            }
-        }
-        (orderbook_sid, orderbook.expect("orderbook subscribe"))
+        let command = read_json(ws).await;
+        assert_eq!(command["cmd"], "subscribe");
+        let channel = command["params"]["channels"][0].as_str().unwrap();
+        assert_eq!(channel, "orderbook_delta");
+        let id = command["id"].as_u64().unwrap();
+        let markets: Vec<String> = command["params"]["market_tickers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap().to_owned())
+            .collect();
+        send_json(
+            ws,
+            json!({
+                "id": id,
+                "type": "subscribed",
+                "msg": {"channel": "orderbook_delta", "sid": orderbook_sid}
+            }),
+        )
+        .await;
+        (orderbook_sid, markets)
     }
 
     async fn test_session(address: std::net::SocketAddr) -> KalshiSession {
@@ -1018,6 +1116,22 @@ mod tests {
             ..KalshiSettings::default()
         };
         let mut session = KalshiSession::new(settings, test_auth(), ConnectOptions::default());
+        session.ws_url = format!("ws://{address}");
+        session.connect().await.unwrap();
+        session
+    }
+
+    async fn test_lifecycle_session(address: std::net::SocketAddr) -> KalshiSession {
+        let settings = KalshiSettings {
+            batch_size: 100,
+            ..KalshiSettings::default()
+        };
+        let mut session = KalshiSession::new_with_mode(
+            settings,
+            test_auth(),
+            ConnectOptions::default(),
+            SessionMode::Lifecycle,
+        );
         session.ws_url = format!("ws://{address}");
         session.connect().await.unwrap();
         session
@@ -1232,18 +1346,6 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let mut ws = accept(listener).await;
-            // Lifecycle subscribe first.
-            let lifecycle = read_json(&mut ws).await;
-            assert_eq!(lifecycle["cmd"], "subscribe");
-            send_json(
-                &mut ws,
-                json!({
-                    "id": lifecycle["id"], "type": "subscribed",
-                    "msg": {"channel": "market_lifecycle_v2", "sid": 1}
-                }),
-            )
-            .await;
-
             // Initial four-market subscription is rejected by the market
             // limit, so the session must split it.
             let first = read_json(&mut ws).await;
@@ -1299,7 +1401,7 @@ mod tests {
             .await
             .unwrap();
         // Process the error and the two acknowledgements.
-        for _ in 0..4 {
+        for _ in 0..3 {
             let frame = tokio::time::timeout(Duration::from_secs(5), session.next_frame())
                 .await
                 .expect("frame timeout")
@@ -1320,15 +1422,6 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let mut ws = accept(listener).await;
-            let lifecycle = read_json(&mut ws).await;
-            send_json(
-                &mut ws,
-                json!({
-                    "id": lifecycle["id"], "type": "subscribed",
-                    "msg": {"channel": "market_lifecycle_v2", "sid": 1}
-                }),
-            )
-            .await;
             let first = read_json(&mut ws).await;
             send_json(
                 &mut ws,
@@ -1355,8 +1448,7 @@ mod tests {
             .apply_subscriptions(&BTreeSet::from(["M1".to_owned()]))
             .await
             .unwrap();
-        // Skip the lifecycle acknowledgement, then observe the rate-limit
-        // handler's backoff. It sleeps before returning the idle frame.
+        // The rate-limit handler backs off before returning the idle frame.
         let mut backed_off = false;
         for _ in 0..5 {
             let _ = tokio::time::timeout(Duration::from_secs(5), session.next_frame())
@@ -1380,15 +1472,6 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let mut ws = accept(listener).await;
-            let lifecycle = read_json(&mut ws).await;
-            send_json(
-                &mut ws,
-                json!({
-                    "id": lifecycle["id"], "type": "subscribed",
-                    "msg": {"channel": "market_lifecycle_v2", "sid": 1}
-                }),
-            )
-            .await;
             let subscribe = read_json(&mut ws).await;
             send_json(
                 &mut ws,
@@ -1502,16 +1585,6 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let mut ws = accept(listener).await;
-            let lifecycle = read_json(&mut ws).await;
-            assert_eq!(lifecycle["cmd"], "subscribe");
-            send_json(
-                &mut ws,
-                json!({
-                    "id": lifecycle["id"], "type": "subscribed",
-                    "msg": {"channel": "market_lifecycle_v2", "sid": 1}
-                }),
-            )
-            .await;
             // The first orderbook subscribe creates the sid; every repeated
             // subscribe folds into it and is acknowledged with `ok`, carrying
             // the venue's cumulative market list.
@@ -1572,7 +1645,7 @@ mod tests {
             .await
             .unwrap();
 
-        for _ in 0..4 {
+        for _ in 0..3 {
             tokio::time::timeout(Duration::from_secs(5), session.next_frame())
                 .await
                 .expect("frame timeout")
@@ -1603,15 +1676,6 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let mut ws = accept(listener).await;
-            let lifecycle = read_json(&mut ws).await;
-            send_json(
-                &mut ws,
-                json!({
-                    "id": lifecycle["id"], "type": "subscribed",
-                    "msg": {"channel": "market_lifecycle_v2", "sid": 1}
-                }),
-            )
-            .await;
             let first = read_json(&mut ws).await;
             send_json(
                 &mut ws,
@@ -1646,7 +1710,7 @@ mod tests {
             .await
             .unwrap();
 
-        for _ in 0..3 {
+        for _ in 0..2 {
             tokio::time::timeout(Duration::from_secs(5), session.next_frame())
                 .await
                 .expect("frame timeout")
@@ -1668,15 +1732,6 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let mut ws = accept(listener).await;
-            let lifecycle = read_json(&mut ws).await;
-            send_json(
-                &mut ws,
-                json!({
-                    "id": lifecycle["id"], "type": "subscribed",
-                    "msg": {"channel": "market_lifecycle_v2", "sid": 1}
-                }),
-            )
-            .await;
             let first = read_json(&mut ws).await;
             send_json(
                 &mut ws,
@@ -1730,7 +1785,7 @@ mod tests {
             .await
             .unwrap();
 
-        for _ in 0..4 {
+        for _ in 0..3 {
             tokio::time::timeout(Duration::from_secs(5), session.next_frame())
                 .await
                 .expect("frame timeout")
@@ -1752,15 +1807,6 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let mut ws = accept(listener).await;
-            let lifecycle = read_json(&mut ws).await;
-            send_json(
-                &mut ws,
-                json!({
-                    "id": lifecycle["id"], "type": "subscribed",
-                    "msg": {"channel": "market_lifecycle_v2", "sid": 1}
-                }),
-            )
-            .await;
             for _ in 0..2 {
                 let command = read_json(&mut ws).await;
                 send_json(
@@ -1786,7 +1832,7 @@ mod tests {
             .await
             .unwrap();
 
-        for _ in 0..3 {
+        for _ in 0..2 {
             tokio::time::timeout(Duration::from_secs(5), session.next_frame())
                 .await
                 .expect("frame timeout")
@@ -1851,6 +1897,155 @@ mod tests {
         assert_eq!(raw.kind, FrameKind::Text);
         assert_eq!(raw.payload, stale.to_string().into_bytes());
         assert!(frame.received_at_us.is_some());
+        server.await.unwrap();
+        session.close().await;
+    }
+
+    #[tokio::test]
+    async fn book_session_subscribes_orderbook_only() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let mut ws = accept(listener).await;
+            // The very first command must carry only the orderbook channel;
+            // the lifecycle plane owns market_lifecycle_v2.
+            let first = read_json(&mut ws).await;
+            assert_eq!(
+                first["params"]["channels"],
+                json!(["orderbook_delta"]),
+                "book sessions must not subscribe to market_lifecycle_v2"
+            );
+            send_json(
+                &mut ws,
+                json!({
+                    "id": first["id"], "type": "subscribed",
+                    "msg": {"channel": "orderbook_delta", "sid": 7}
+                }),
+            )
+            .await;
+        });
+
+        let mut session = test_session(address).await;
+        session
+            .apply_subscriptions(&BTreeSet::from(["M1".to_owned()]))
+            .await
+            .unwrap();
+        let frame = tokio::time::timeout(Duration::from_secs(5), session.next_frame())
+            .await
+            .expect("ack frame timed out")
+            .expect("ack frame failed");
+        assert!(frame.events.is_empty());
+        // Re-applying the same desired set must not emit a lifecycle command
+        // either; the session only reconciles orderbook state.
+        session
+            .apply_subscriptions(&BTreeSet::from(["M1".to_owned()]))
+            .await
+            .unwrap();
+        server.await.unwrap();
+        session.close().await;
+    }
+
+    #[tokio::test]
+    async fn lifecycle_session_subscribes_lifecycle_only_and_ignores_orderbook() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let mut ws = accept(listener).await;
+            // The first (and only) command is the lifecycle subscription; the
+            // book universe is never fanned into this socket.
+            let first = read_json(&mut ws).await;
+            assert_eq!(first["cmd"], "subscribe");
+            assert_eq!(
+                first["params"]["channels"],
+                json!(["market_lifecycle_v2"]),
+                "the lifecycle session must not subscribe to orderbook_delta"
+            );
+            assert!(
+                first["params"].get("market_tickers").is_none(),
+                "the lifecycle session must not name book markets"
+            );
+            send_json(
+                &mut ws,
+                json!({
+                    "id": first["id"], "type": "subscribed",
+                    "msg": {"channel": "market_lifecycle_v2", "sid": 9}
+                }),
+            )
+            .await;
+            // An order-book frame arriving on the lifecycle socket is ignored
+            // explicitly, never applied to a tracked book.
+            send_json(
+                &mut ws,
+                json!({
+                    "type": "orderbook_snapshot", "sid": 9, "seq": 1,
+                    "sending_ts_ms": 1_700_000_000_001i64,
+                    "msg": {
+                        "market_ticker": "M1", "clock": 1,
+                        "yes_dollars_fp": [["0.5", "1"]],
+                        "no_dollars_fp": [],
+                    }
+                }),
+            )
+            .await;
+            // A lifecycle frame on the lifecycle socket is decoded normally.
+            send_json(
+                &mut ws,
+                json!({
+                    "type": "market_lifecycle_v2", "sid": 9, "seq": 2,
+                    "sending_ts_ms": 1_700_000_000_002i64,
+                    "msg": {
+                        "market_ticker": "M-NEW",
+                        "event_type": "created",
+                        "close_ts": 1_800_000_000i64,
+                        "additional_metadata": {"title": "Lifecycle market"},
+                        "price_ranges": [{"start": "0", "end": "1", "step": "0.01"}],
+                        "price_level_structure": "linear_cent",
+                    }
+                }),
+            )
+            .await;
+        });
+
+        let mut session = test_lifecycle_session(address).await;
+        session
+            .apply_subscriptions(&BTreeSet::from(["M1".to_owned()]))
+            .await
+            .unwrap();
+        // The desired book universe is ignored on the lifecycle plane.
+        assert!(session.desired.is_empty());
+        // A misrouted snapshot request is a no-op, not an error or a reconnect.
+        session.request_snapshot(&["M1".to_owned()]).await.unwrap();
+
+        // The lifecycle subscribe acknowledgement arrives first.
+        let ack = tokio::time::timeout(Duration::from_secs(5), session.next_frame())
+            .await
+            .expect("lifecycle ack timed out")
+            .expect("lifecycle ack failed");
+        assert!(ack.events.is_empty());
+        assert_eq!(ack.decode, DecodeOutcome::ignored("subscription_ack"));
+        assert_eq!(session.lifecycle_sid, Some(9));
+
+        // The order-book frame on the lifecycle socket is ignored explicitly.
+        let ignored = tokio::time::timeout(Duration::from_secs(5), session.next_frame())
+            .await
+            .expect("orderbook frame timed out")
+            .expect("orderbook frame failed");
+        assert!(ignored.events.is_empty());
+        assert_eq!(
+            ignored.decode,
+            DecodeOutcome::ignored("unexpected_orderbook_frame")
+        );
+
+        // The lifecycle frame is decoded normally.
+        let event = next_event(&mut session).await;
+        assert!(matches!(
+            event,
+            ExchangeEvent::Lifecycle {
+                native_symbol,
+                kind: crate::model::LifecycleKind::Created,
+                ..
+            } if native_symbol == "M-NEW"
+        ));
         server.await.unwrap();
         session.close().await;
     }

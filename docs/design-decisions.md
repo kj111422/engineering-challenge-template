@@ -384,3 +384,105 @@ trailing bytes, fail-closed rejection with no venue dial, manifest
 provenance without credentials, `network-probe` direct/proxy/config
 failure), `src/egress.rs` unit tests (env-lookup injection; no process-global
 state is touched by the tests).
+
+## 12. Dedicated Kalshi lifecycle control plane
+
+**Context.** Every Kalshi order-book websocket sent its own
+`market_lifecycle_v2` subscription, so a 74-shard, two-replica run opened
+roughly 148 lifecycle subscriptions and applied each notification up to 148
+times. A control-channel error could also fail the book data path, and no
+component owned the lifecycle stream's reconnect semantics.
+
+**Decision.** Book shards carry only `orderbook_delta`. A dedicated,
+supervised lifecycle plane (`collector.lifecycle_replicas`, Kalshi-only,
+default 1, maximum 4) owns `market_lifecycle_v2`. The core deduplicates
+notifications across replicas by `(market, kind, exchange timestamp)` with a
+bounded window; unknown Create/Activate notifications force an out-of-cycle
+REST reconciliation (debounced and shared with the periodic ticker) instead
+of silently diverging from the authoritative catalog; lifecycle reconnects
+trigger a REST reconciliation so notifications missed while disconnected are
+recovered; terminal notifications retire a tracked market exactly once, and
+terminal notifications for untracked markets are counted, not dropped.
+Lifecycle sockets are charged to the capacity plan's connection budget
+(`max_total_connections`), and carry no order-book subscriptions into the
+subscription universe.
+
+**Alternatives.** Per-socket lifecycle subscriptions (status quo — fan-out
+and misattribution); one lifecycle socket with no redundancy; subscribing
+book replicas anyway and filtering client-side; or treating periodic REST
+as the only lifecycle signal (up to a full reconciliation interval of
+staleness for terminal events).
+
+**Consequences.** One (or a few) supervised control sockets replace every
+book shard subscribing. Duplicate deliveries across lifecycle replicas are
+applied once. The subscription universe can still temporarily diverge from
+the truth when the venue creates a market mid-interval, but the divergence
+is surfaced (counter and a forced reconciliation), never silent. Lifecycle
+sockets consume the shared connection ceiling; operators budget for them the
+same as book sockets. Polymarket is unaffected: it publishes lifecycle
+notifications on the market channel, not a separate one.
+
+**Implementation.** `src/exchange/kalshi/session.rs` (`SessionMode`,
+`LifecycleSessionFactory`), `src/exchange/kalshi/mod.rs` (optional
+`Exchange::lifecycle_session_factory`), `src/exchange/mod.rs`,
+`src/coordinator.rs` (lifecycle spawn, `DiscoveryPlane`, drain and fatal-check
+semantics, `LIFECYCLE_SHARD`), `src/collector/state.rs` (dedup window,
+reconcile request flag, out-of-book-plane status handling),
+`src/metrics.rs` (`lifecycle_duplicates`, `lifecycle_unknown_symbols`),
+`src/config.rs` (`collector.lifecycle_replicas`), `src/capacity.rs`.
+
+**Verification.** `tests/kalshi_lifecycle_plane.rs` (book sockets never
+subscribe; exactly the configured lifecycle connection count; capacity and
+report accounting; unknown Create forces an out-of-cycle reconciliation;
+terminal `settled` retires the market exactly once; lifecycle reconnect
+consults REST), `src/exchange/kalshi/session.rs` (`SessionMode` book and
+lifecycle command discipline), `src/collector/state/tests.rs` (dedup,
+reconciliation request, untracked terminal accounting, out-of-book-plane
+status), `src/capacity.rs` (Kalshi connection budget including the plane),
+`tests/session_recovery.rs`, `scripts/check_architecture.py`.
+
+**Semantic ordering rules.** Lifecycle correctness does not stop at
+delivery. Three rules make the merge semantics explicit:
+
+1. **Canonical event identity.** Kalshi's per-subscription `seq` cannot name
+   the same notification across replicas, so the deduplication key is
+   `(market, kind, exchange timestamp, payload fingerprint)`. The fingerprint
+   is a SHA-256 over the normalized payload (order-independent price ranges,
+   title, close time, tick size, price-level structure). Two different
+   updates for the same market with the same kind and timestamp are applied;
+   a byte-identical redelivery is dropped. Residual risk, accepted and
+   documented: the venue cannot publish two genuinely distinct updates with
+   byte-identical normalized payloads at the same timestamp — such a pair is
+   indistinguishable from redelivery by construction and is applied once.
+   Events without an exchange timestamp are never deduplicated (all
+   application paths are idempotent).
+2. **Cross-replica monotonicity.** Every applied notification advances a
+   per-market high-water mark on exchange order (venue timestamp, falling
+   back to local receive time). Nonterminal notifications older than the
+   mark are stale replica backfill and are dropped and counted
+   (`lifecycle_stale_dropped`). Terminal and deactivation notifications are
+   never dropped: they only ever remove a market, so applying one
+   out-of-order can never resurrect or corrupt state.
+3. **Reconciliation barrier.** A discovery round carries the local timestamp
+   at which its venue snapshot was taken. If a terminal lifecycle
+   notification applied during or after the snapshot, the round may not
+   re-add that market (`lifecycle_discovery_vetoes`) — a stale REST response
+   cannot resurrect a retired market into the universe. If a lifecycle
+   metadata update applied during or after the snapshot, the round preserves
+   it over the older REST record (`lifecycle_kept_metadata`); a later round
+   (started after the retirement or the update) is authoritative again.
+   Tombstones live in a bounded per-market window (4096 entries with FIFO
+   eviction) and expire naturally for any round started after them.
+
+Terminal retirement is idempotent (`remove_market` is a no-op for a market
+already absent), and untracked terminal notifications are counted in
+`lifecycle_unknown_symbols`, so a market the venue already settled can never
+be resurrected by the lifecycle plane itself; only REST reconciliation can
+reintroduce a market, which is the intended authority boundary. The
+lifecycle plane's health is reported separately (`collector_lifecycle_*`
+and the `lifecycle` readiness check): for Kalshi runs that spawned a
+lifecycle plane, an entirely disconnected plane fails `/readyz`; the REST
+reconciliation cadence still bounds universe divergence to one discovery
+interval. Lifecycle sockets close and are joined during graceful shutdown
+before the process exits, and events already accepted are applied during
+the shutdown drain.

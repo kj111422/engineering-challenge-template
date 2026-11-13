@@ -28,6 +28,20 @@ use crate::{
     time::now_us,
 };
 
+/// Lifecycle-plane health reported separately from the book plane.
+///
+/// Kalshi-only: for venues without a separate lifecycle channel both fields
+/// are zero and the readiness check is a no-op. `configured` counts the
+/// supervised lifecycle sockets this run spawned; `connected` counts the
+/// subset whose session is currently up. Readiness treats the Kalshi plane
+/// as required, not best-effort, so an entirely disconnected plane degrades
+/// `/readyz` while the REST reconciliation still bounds catalog divergence.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LifecycleHealth {
+    pub configured: u64,
+    pub connected: u64,
+}
+
 /// Collector data-path counters.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CollectorStats {
@@ -56,6 +70,30 @@ pub struct CollectorStats {
     pub crossed_snapshots_skipped: u64,
     pub duplicate_events: u64,
     pub lifecycle_events: u64,
+    /// Duplicate events (same market, kind and exchange timestamp) skipped by
+    /// the lifecycle deduplication barrier. Non-zero is expected when
+    /// `lifecycle_replicas > 1`.
+    #[serde(default)]
+    pub lifecycle_duplicates: u64,
+    /// Lifecycle events whose market is not (or no longer) tracked. Unknown
+    /// Create/Activate events additionally request an out-of-cycle REST
+    /// reconciliation; never silently dropped.
+    #[serde(default)]
+    pub lifecycle_unknown_symbols: u64,
+    /// Lifecycle events whose exchange order is older than the order already
+    /// applied for the same market (out-of-order replica delivery). Terminal
+    /// notifications are never dropped; only nonterminal backfills.
+    #[serde(default)]
+    pub lifecycle_stale_dropped: u64,
+    /// Discovery rounds that refused to re-add a market already known to be
+    /// terminal (lifecycle tombstone newer than the round start). The round
+    /// completes; the market is not resurrected.
+    #[serde(default)]
+    pub lifecycle_discovery_vetoes: u64,
+    /// Discovery metadata conflicts resolved in favor of lifecycle-applied
+    /// state for rounds that started before the lifecycle event applied.
+    #[serde(default)]
+    pub lifecycle_kept_metadata: u64,
     pub current_symbols: u64,
     pub shard_count: u64,
     /// Discontinuity incidents detected (gaps in event continuity)
@@ -182,6 +220,7 @@ pub struct RuntimeStatus {
     pub persistence: PersistenceStatus,
     pub writer_healthy: bool,
     pub fatal_error: Option<String>,
+    pub lifecycle: LifecycleHealth,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -201,6 +240,7 @@ pub struct ReadinessReport {
     pub persistence: PersistenceStatus,
     pub writer_healthy: bool,
     pub fatal_error: Option<String>,
+    pub lifecycle: LifecycleHealth,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -219,6 +259,7 @@ pub struct MetricsSnapshot {
     pub discovery: Option<DiscoveryStats>,
     pub discovery_failures: u64,
     pub discovery_totals: DiscoveryTotals,
+    pub lifecycle: LifecycleHealth,
     #[serde(skip)]
     pub discovery_counted_at_us: i64,
 }
@@ -255,6 +296,7 @@ impl MetricsRegistry {
                 discovery: None,
                 discovery_failures: 0,
                 discovery_totals: DiscoveryTotals::default(),
+                lifecycle: LifecycleHealth::default(),
                 discovery_counted_at_us: 0,
             })),
         }
@@ -280,6 +322,7 @@ impl MetricsRegistry {
         state.writer_healthy = status.writer_healthy;
         state.fatal_error = status.fatal_error;
         state.discovery_failures = status.discovery_failures;
+        state.lifecycle = status.lifecycle;
         if let Some(discovery) = status.discovery {
             if discovery.finished_at_us > state.discovery_counted_at_us {
                 state.discovery_totals.rounds = state.discovery_totals.rounds.saturating_add(1);
@@ -327,6 +370,7 @@ impl MetricsRegistry {
                 discovery: None,
                 discovery_failures: 0,
                 discovery_totals: DiscoveryTotals::default(),
+                lifecycle: LifecycleHealth::default(),
                 discovery_counted_at_us: 0,
             })
     }
@@ -503,6 +547,28 @@ impl MetricsRegistry {
             },
         );
 
+        // The lifecycle control plane is required for Kalshi runs that
+        // spawned one: universe membership must not silently diverge from the
+        // authoritative catalog. A fully disconnected plane degrades
+        // readiness; the REST reconciliation still bounds catalog divergence
+        // to one discovery interval. Venues without a separate lifecycle
+        // channel report configured == 0 and pass trivially.
+        let lifecycle_ok = snapshot.lifecycle.configured == 0 || snapshot.lifecycle.connected > 0;
+        checks.insert(
+            "lifecycle".to_owned(),
+            ReadinessCheck {
+                ok: lifecycle_ok,
+                detail: if snapshot.lifecycle.configured == 0 {
+                    "lifecycle plane not configured".to_owned()
+                } else {
+                    format!(
+                        "{}/{} lifecycle sockets connected",
+                        snapshot.lifecycle.connected, snapshot.lifecycle.configured
+                    )
+                },
+            },
+        );
+
         let ready = checks.values().all(|check| check.ok);
         ReadinessReport {
             status: if ready { "ready" } else { "not_ready" }.to_owned(),
@@ -514,6 +580,7 @@ impl MetricsRegistry {
             persistence: snapshot.persistence,
             writer_healthy: snapshot.writer_healthy,
             fatal_error: snapshot.fatal_error,
+            lifecycle: snapshot.lifecycle,
         }
     }
 
@@ -737,6 +804,16 @@ impl MetricsRegistry {
             "collector_ready",
             "One when every readiness invariant passes",
             u8::from(readiness.ready)
+        );
+        gauge!(
+            "collector_lifecycle_connected",
+            "Supervised lifecycle sockets connected (Kalshi lifecycle plane)",
+            snapshot.lifecycle.connected
+        );
+        gauge!(
+            "collector_lifecycle_configured",
+            "Supervised lifecycle sockets configured (Kalshi lifecycle plane)",
+            snapshot.lifecycle.configured
         );
         gauge!(
             "collector_writer_healthy",
@@ -1012,6 +1089,7 @@ mod tests {
             },
             writer_healthy: true,
             fatal_error: None,
+            lifecycle: LifecycleHealth::default(),
         }
     }
 
@@ -1048,6 +1126,36 @@ mod tests {
         let mut status = healthy_status(now);
         mutate(&mut status);
         registry_with(&[(0, 0, true), (1, 0, true)], status).readiness()
+    }
+
+    #[test]
+    fn lifecycle_plane_disconnected_degrades_readiness() {
+        let healthy = readiness_with(|status| {
+            status.lifecycle = LifecycleHealth {
+                configured: 2,
+                connected: 2,
+            };
+        });
+        assert!(healthy.checks["lifecycle"].ok);
+        assert!(healthy.ready);
+
+        let disconnected = readiness_with(|status| {
+            status.lifecycle = LifecycleHealth {
+                configured: 2,
+                connected: 0,
+            };
+        });
+        assert!(!disconnected.checks["lifecycle"].ok);
+        assert!(!disconnected.ready);
+
+        let unconfigured = readiness_with(|status| {
+            status.lifecycle = LifecycleHealth {
+                configured: 0,
+                connected: 0,
+            };
+        });
+        assert!(unconfigured.checks["lifecycle"].ok);
+        assert!(unconfigured.ready);
     }
 
     #[test]

@@ -51,6 +51,18 @@ impl Exchange for KalshiExchange {
     fn session_factory(self: Arc<Self>) -> Arc<dyn SessionFactory> {
         self
     }
+
+    fn lifecycle_session_factory(self: Arc<Self>) -> Option<Arc<dyn SessionFactory>> {
+        // The dedicated lifecycle plane needs credentials (the websocket
+        // handshake is signed); without them no control socket is spawned
+        // rather than one that can only fail.
+        let auth = self.auth.as_ref().map(Arc::clone)?;
+        Some(Arc::new(session::LifecycleSessionFactory::new(
+            self.settings.clone(),
+            auth,
+            self.network.clone(),
+        )))
+    }
 }
 
 impl KalshiExchange {

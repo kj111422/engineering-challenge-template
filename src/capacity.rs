@@ -34,6 +34,8 @@ pub struct CapacityPlan {
     pub shards: usize,
     pub replicas: usize,
     pub total_connections: usize,
+    /// Dedicated lifecycle control-plane sockets included in `total_connections`.
+    pub lifecycle_connections: usize,
     pub max_total_connections: usize,
     pub max_symbols_per_socket: usize,
     pub initial_subscription_bytes: u64,
@@ -50,12 +52,13 @@ impl CapacityPlan {
     #[must_use]
     pub fn summary(&self) -> String {
         format!(
-            "{} venue markets -> {} outcome symbols, {} shards x {} replicas = {} sockets, \
+            "{} venue markets -> {} outcome symbols, {} shards x {} replicas + {} lifecycle = {} sockets, \
              ~{} B initial subscription, ~{} MiB books, ~{} B/s snapshots",
             self.selected_markets,
             self.outcome_symbols,
             self.shards,
             self.replicas,
+            self.lifecycle_connections,
             self.total_connections,
             self.initial_subscription_bytes,
             self.estimated_book_memory_bytes / (1 << 20),
@@ -74,10 +77,18 @@ pub fn plan(settings: &Settings, markets: &[MarketInfo]) -> anyhow::Result<Capac
     let selected_markets = count_selected_markets(markets);
     let shards = derive_shard_count(settings, outcome_symbols)?;
     let replicas = settings.collector.replicas;
-    let total_connections = shards.saturating_mul(replicas);
+    let lifecycle_connections = match settings.exchange {
+        crate::config::ExchangeKind::Kalshi => settings.collector.lifecycle_replicas,
+        // Polymarket has no separate lifecycle channel; charging phantom
+        // sockets would reject valid full-universe runs.
+        crate::config::ExchangeKind::Polymarket => 0,
+    };
+    let total_connections = shards
+        .saturating_mul(replicas)
+        .saturating_add(lifecycle_connections);
     anyhow::ensure!(
         total_connections <= settings.collector.max_total_connections,
-        "{shards} shards x {replicas} replicas needs {total_connections} websocket \
+        "{shards} shards x {replicas} replicas + {lifecycle_connections} lifecycle plane needs {total_connections} websocket \
          connections, above max_total_connections = {}",
         settings.collector.max_total_connections
     );
@@ -127,6 +138,7 @@ pub fn plan(settings: &Settings, markets: &[MarketInfo]) -> anyhow::Result<Capac
         shards,
         replicas,
         total_connections,
+        lifecycle_connections,
         max_total_connections: settings.collector.max_total_connections,
         max_symbols_per_socket: settings.collector.max_symbols_per_socket,
         initial_subscription_bytes,
@@ -345,6 +357,61 @@ mod tests {
                 .to_string()
                 .contains("max_snapshot_bytes_per_sec")
         );
+    }
+
+    fn kalshi_settings(shards: usize, per_socket: usize, max_shards: usize) -> Settings {
+        let mut settings = Settings::for_exchange(crate::config::ExchangeKind::Kalshi);
+        settings.collector.shards = shards;
+        settings.collector.max_symbols_per_socket = per_socket;
+        settings.collector.max_shards = max_shards;
+        settings
+    }
+
+    #[test]
+    fn kalshi_plan_charges_the_lifecycle_connection() {
+        let settings = kalshi_settings(2, 5_000, 64);
+        let plan = plan(&settings, &markets(10)).unwrap();
+        assert_eq!(plan.replicas, 2);
+        assert_eq!(plan.lifecycle_connections, 1);
+        assert_eq!(plan.total_connections, 2 * 2 + 1);
+    }
+
+    #[test]
+    fn polymarket_plan_ignores_the_lifecycle_plane() {
+        let settings = settings(2, 5_000, 64);
+        // The knob exists in the shared settings but charges nothing:
+        // Polymarket has no separate lifecycle channel.
+        assert_eq!(settings.collector.lifecycle_replicas, 1);
+        let plan = plan(&settings, &markets(10)).unwrap();
+        assert_eq!(plan.lifecycle_connections, 0);
+        assert_eq!(plan.total_connections, 4);
+    }
+
+    #[test]
+    fn lifecycle_plane_counts_against_the_connection_ceiling() {
+        let mut settings = kalshi_settings(2, 5_000, 64);
+        settings.collector.max_total_connections = 4;
+        let error = plan(&settings, &markets(10)).unwrap_err();
+        assert!(error.to_string().contains("max_total_connections"));
+        assert!(error.to_string().contains("lifecycle"));
+    }
+
+    #[test]
+    fn disabling_the_lifecycle_plane_frees_the_slot() {
+        let mut settings = kalshi_settings(2, 5_000, 64);
+        settings.collector.lifecycle_replicas = 0;
+        settings.collector.max_total_connections = 4;
+        let plan = plan(&settings, &markets(10)).unwrap();
+        assert_eq!(plan.lifecycle_connections, 0);
+        assert_eq!(plan.total_connections, 4);
+    }
+
+    #[test]
+    fn lifecycle_plane_survives_capacity_refresh() {
+        let mut settings = kalshi_settings(2, 5_000, 64);
+        settings.collector.max_total_connections = 4;
+        let error = plan_fixed_topology(&settings, &markets(10), &[5, 5]).unwrap_err();
+        assert!(error.to_string().contains("max_total_connections"));
     }
 
     #[test]
