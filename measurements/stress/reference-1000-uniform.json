@@ -1,0 +1,104 @@
+{
+  "build_profile": "release",
+  "collector_binary_sha256": "4eacfd59b64d571268e4ba86ebfeb6b19105f4d4c0e604bd89579e9e8e62c331",
+  "counts": {
+    "generated_events": 200,
+    "transmitted_frames": 2405,
+    "writer_bytes": 196608,
+    "writer_messages": 2192
+  },
+  "coverage": {
+    "acknowledged": 1000,
+    "acknowledged_set_sha256": "580ef3031ef119bceabec7736deb3b58d2d235fcdc4c5fb663456139319a5020",
+    "anchored": 1000,
+    "anchored_set_sha256": "580ef3031ef119bceabec7736deb3b58d2d235fcdc4c5fb663456139319a5020",
+    "coverage_valid": true,
+    "decoys_absent": true,
+    "expected": 1000,
+    "expected_set_sha256": "580ef3031ef119bceabec7736deb3b58d2d235fcdc4c5fb663456139319a5020",
+    "missing_ack": 0,
+    "missing_anchor": 0
+  },
+  "evidence_class": "synthetic-loopback",
+  "execution_mode": "stress",
+  "failure_class": null,
+  "generator_version": 1,
+  "host": {
+    "clock_resolution_ns": 1,
+    "clock_source": "mach_absolute_time",
+    "cpu_count": 8,
+    "cpu_model": "Apple M1",
+    "disk_free_bytes": 90401521664,
+    "fd_limit": 1048576,
+    "kernel": "27.0.0",
+    "os": "Darwin 27.0.0",
+    "ram_mb": 8192,
+    "rustc_version": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "target_triple": "aarch64-apple-darwin"
+  },
+  "incidents": {
+    "discontinuity_incidents": 0,
+    "duplicate_events": 0,
+    "lifecycle_duplicates": 0,
+    "lifecycle_stale_dropped": 0,
+    "sequence_resets": 0,
+    "unexplained_drops": 0
+  },
+  "performance": {
+    "cpu_seconds": {
+      "reason": "cpu_seconds not measured (no libc dependency)",
+      "value": null
+    },
+    "memory_per_symbol_bytes": 29147,
+    "msgs_per_sec_max": {
+      "reason": "binned throughput lands with the reference matrix",
+      "value": null
+    },
+    "msgs_per_sec_p50": {
+      "reason": "binned throughput lands with the reference matrix",
+      "value": null
+    },
+    "msgs_per_sec_p95": {
+      "reason": "binned throughput lands with the reference matrix",
+      "value": null
+    },
+    "msgs_per_sec_p99": {
+      "reason": "binned throughput lands with the reference matrix",
+      "value": null
+    },
+    "rss_peak_bytes": 29147136,
+    "snapshot_anchor_ms": 1054,
+    "writer_queue_high_water_mark": {
+      "reason": "high-water mark not exposed by WriterStats",
+      "value": null
+    }
+  },
+  "prng_algorithm_version": 1,
+  "run_id": "stress-1794597478378-88592",
+  "run_status": "success",
+  "rustc_version": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "scenario": {
+    "distribution": "uniform",
+    "eligible_count": 1000,
+    "events_published": 200,
+    "journal": true,
+    "lifecycle_replicas": 1,
+    "replicas_actual": 2,
+    "replicas_requested": 2,
+    "seed": 7,
+    "shards_actual": 1,
+    "shards_requested": 1,
+    "symbols": 1000
+  },
+  "scenario_version": 1,
+  "schema_version": 1,
+  "source_commit": "2940b5fb22077442986767ab9e8c86fb51d8faa7",
+  "target_triple": "aarch64-apple-darwin",
+  "verify": {
+    "completeness_valid": true,
+    "coverage_valid": true,
+    "journal_complete": true,
+    "journal_record_count": 2389,
+    "verify_valid": true
+  }
+}

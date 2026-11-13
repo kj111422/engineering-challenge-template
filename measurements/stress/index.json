@@ -1,0 +1,17 @@
+{
+  "cells": {
+    "reference-1000-uniform": {
+      "path": "reference-1000-uniform.json",
+      "run_status": "success",
+      "seed": 7,
+      "symbols": 1000
+    },
+    "reference-failed": {
+      "path": "reference-failed.json",
+      "run_status": "failed",
+      "seed": 9,
+      "symbols": 1000
+    }
+  },
+  "schema_version": 1
+}
