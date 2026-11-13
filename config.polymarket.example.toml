@@ -29,6 +29,9 @@ final_snapshots = true
 writer_queue = 16384
 flush_interval_secs = 1
 max_markets = 20
+# Polymarket has no separate lifecycle channel; this knob is Kalshi-only and
+# is neither used nor counted in the Polymarket connection budget.
+lifecycle_replicas = 0
 duration_secs = 0
 writer_send_timeout_secs = 30
 max_total_connections = 64

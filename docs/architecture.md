@@ -29,8 +29,9 @@ scheduled work, not an implicit capability of this implementation.
 `src/main.rs` parses the CLI and dispatches `collect`, `discover`, `replay`,
 `inspect`, `verify`, `latency`, and `journal` subcommands. Live collection
 enters `src/coordinator.rs`, which constructs the exchange adapter, performs
-discovery, plans capacity, loads a catalog, starts session workers, the writer,
-the journal, and the metrics endpoint, and then runs one serialized event loop.
+discovery, plans capacity, loads a catalog, starts session workers (plus the
+dedicated Kalshi lifecycle control plane), the writer, the journal, and the
+metrics endpoint, and then runs one serialized event loop.
 
 Discovery is venue-specific behind `Exchange`. `src/capacity.rs` converts the
 discovered records and outcome symbols into shard, connection, subscription,
@@ -78,6 +79,39 @@ flowchart LR
     JOURNAL --> RUN[Journal run directory]
     COORD --> METRICS[Metrics and readiness]
 ```
+
+## Dedicated lifecycle control plane
+
+Kalshi exposes `market_lifecycle_v2` as a separate channel. Subscribing to it
+from every order-book shard duplicated the stream per replica and let an
+unrelated control-plane failure take down a data-plane connection. Book
+shards therefore carry only `orderbook_delta` subscriptions.
+
+The coordinator starts `collector.lifecycle_replicas` supervised lifecycle
+sockets (Kalshi only, default 1, maximum 4) alongside the book workers. Each
+socket receives the same `market_lifecycle_v2` stream; the core deduplicates
+notifications by `(market, kind, exchange timestamp)` with a bounded window,
+so each distinct notification is applied once however many lifecycle replicas
+are configured. A lifecycle event for an untracked market is never applied
+blindly: Create/Activate events request an out-of-cycle REST reconciliation
+(debounced, shared with the periodic ticker), and terminal notifications for
+untracked markets are counted in `lifecycle_unknown_symbols` rather than
+dropped. A `settled`/`determined`/`resolved`/`deactivated` notification
+retires a tracked market exactly once and emits the normal retirement
+boundary.
+
+The lifecycle plane is deliberately separate from the book plane: it has no
+order-book subscriptions, contributes nothing to the per-shard subscription
+universe, is never counted as an active book source for continuity incidents,
+and its sockets are included in the capacity plan's connection budget
+(`capacity.lifecycle_connections`, bounded by `max_total_connections`). When
+a lifecycle socket reconnects after a disconnect, the coordinator requests a
+REST discovery round before the event stream is trusted again, because the
+venue may have emitted notifications while the socket was down. Set
+`lifecycle_replicas = 0` to disable the plane; new markets then enter only
+via REST discovery and terminal removals are deferred to the reconciliation
+cadence. Polymarket has no separate lifecycle channel; its `lifecycle_*`
+notifications ride the market channel and are unaffected.
 
 ## Abstraction boundaries
 
@@ -158,6 +192,7 @@ flowchart LR
 | Discovery | `exchange/*/discovery.rs`, `capacity.rs`, `catalog.rs` | Venue discovery, eligibility, capacity admission, checkpoint |
 | State | `collector/state.rs`, `orderbook.rs`, `model.rs`, `fixed.rs` | Serialized books, failover, fixed-point values, output model |
 | Transport | `exchange/*/session.rs`, `session.rs`, `ws.rs`, `egress.rs` | Protocol handling, supervised workers, connection options; egress policy: direct or explicit fail-closed proxy, route provenance |
+| Control plane | `exchange/kalshi/session.rs` (`SessionMode::Lifecycle`), `coordinator.rs`, `collector/state.rs` | Dedicated Kalshi `market_lifecycle_v2` subscription, cross-connection dedup, reconciliation triggers |
 | Diagnostics | `probe.rs` | `network-probe`: stage-timed transport diagnostic, JSON report |
 | Output | `writer.rs`, `util/aligned_sbe_*.rs`, `util/dtos.rs` | Ordered SBE writes, chunk framing, supplied-schema DTOs |
 | Durability | `journal.rs`, `persistence.rs`, `report.rs` | Raw-frame journal, checkpoints, run sidecars |

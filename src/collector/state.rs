@@ -6,7 +6,7 @@
 //! This makes the correctness-critical logic deterministic and testable without
 //! a network.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 
 use anyhow::{Context, bail};
 use chrono::{DateTime, Utc};
@@ -32,6 +32,11 @@ use crate::{
         price_to_sbe, quantity_to_sbe,
     },
 };
+
+/// Maximum distinct lifecycle (market, kind, exchange timestamp) triples kept
+/// for cross-connection deduplication. Lifecycle traffic is tiny; 4096 keys
+/// cover days of notifications across every replica.
+const LIFECYCLE_SEEN_CAPACITY: usize = 4096;
 
 /// Tuning for the synchronous core. Durations are microseconds so the core can
 /// be driven by replay timestamps as well as wall-clock ticks.
@@ -252,6 +257,16 @@ pub struct CollectorCore {
     /// Recovery controls that have not been handed to a worker yet.
     pending_recovery: BTreeMap<SourceId, PendingRecovery>,
     next_recovery_generation: u64,
+    /// Set when a lifecycle event references an untracked market; the
+    /// coordinator takes this and forces an out-of-cycle REST reconciliation
+    /// so the subscription universe converges back to the authoritative
+    /// discovered universe instead of waiting for the next ticker.
+    lifecycle_reconcile_pending: bool,
+    /// Bounded deduplication window for lifecycle (market, kind, exchange
+    /// timestamp) triples; replicas and reconnects re-deliver the same
+    /// venue notification.
+    lifecycle_seen: VecDeque<String>,
+    lifecycle_seen_set: HashSet<String>,
     shutting_down: bool,
     stats: CollectorStats,
 }
@@ -295,6 +310,9 @@ impl CollectorCore {
             dirty_shards: BTreeSet::new(),
             pending_recovery: BTreeMap::new(),
             next_recovery_generation: 1,
+            lifecycle_reconcile_pending: false,
+            lifecycle_seen: VecDeque::new(),
+            lifecycle_seen_set: HashSet::new(),
             shutting_down: false,
             stats,
         })
@@ -646,18 +664,30 @@ impl CollectorCore {
                 price_ranges,
                 price_level_structure,
                 meta,
-            } => self.handle_lifecycle(
-                &native_symbol,
-                kind,
-                LifecycleMetadata {
-                    close_time_us,
-                    title,
-                    tick_size_us,
-                    price_ranges,
-                    price_level_structure,
-                },
-                meta,
-            ),
+            } => {
+                // Replicas and reconnects re-deliver the same venue lifecycle
+                // notification. Apply each distinct (market, kind, exchange
+                // timestamp) exactly once; events without an exchange
+                // timestamp cannot be keyed and are applied (all mutations
+                // are idempotent).
+                if !self.record_lifecycle(&native_symbol, &kind, meta.exchange_ts_us) {
+                    self.stats.lifecycle_duplicates =
+                        self.stats.lifecycle_duplicates.saturating_add(1);
+                    return Vec::new();
+                }
+                self.handle_lifecycle(
+                    &native_symbol,
+                    kind,
+                    LifecycleMetadata {
+                        close_time_us,
+                        title,
+                        tick_size_us,
+                        price_ranges,
+                        price_level_structure,
+                    },
+                    meta,
+                )
+            }
             ExchangeEvent::StreamReset {
                 native_symbols,
                 reason,
@@ -1023,6 +1053,54 @@ impl CollectorCore {
         }
     }
 
+    /// Record one lifecycle key; returns `false` when this exact venue
+    /// notification was already applied (crossed connections delivering the
+    /// same event).
+    fn record_lifecycle(
+        &mut self,
+        native: &str,
+        kind: &LifecycleKind,
+        exchange_ts_us: Option<i64>,
+    ) -> bool {
+        let Some(ts) = exchange_ts_us else {
+            return true;
+        };
+        let kind_key = match kind {
+            LifecycleKind::Created => "created".to_owned(),
+            LifecycleKind::Activated => "activated".to_owned(),
+            LifecycleKind::NewMarket => "new_market".to_owned(),
+            LifecycleKind::Deactivated => "deactivated".to_owned(),
+            LifecycleKind::CloseDateUpdated => "close_date_updated".to_owned(),
+            LifecycleKind::Determined => "determined".to_owned(),
+            LifecycleKind::Settled => "settled".to_owned(),
+            LifecycleKind::Resolved => "resolved".to_owned(),
+            LifecycleKind::PriceStructureUpdated => "price_structure_updated".to_owned(),
+            LifecycleKind::MetadataUpdated => "metadata_updated".to_owned(),
+            LifecycleKind::Other(other) => format!("other:{other}"),
+        };
+        let key = format!("{native}|{kind_key}|{ts}");
+        if !self.lifecycle_seen_set.insert(key.clone()) {
+            return false;
+        }
+        self.lifecycle_seen.push_back(key);
+        while self.lifecycle_seen.len() > LIFECYCLE_SEEN_CAPACITY {
+            if let Some(oldest) = self.lifecycle_seen.pop_front() {
+                self.lifecycle_seen_set.remove(&oldest);
+            }
+        }
+        true
+    }
+
+    /// Take the pending lifecycle reconciliation request, clearing it.
+    ///
+    /// Returns `true` when a lifecycle event referenced an untracked market
+    /// (or the dedicated lifecycle plane reconnected) and the authoritative
+    /// REST catalog should be consulted as soon as possible rather than on
+    /// the next discovery ticker.
+    pub fn take_lifecycle_reconcile_request(&mut self) -> bool {
+        std::mem::replace(&mut self.lifecycle_reconcile_pending, false)
+    }
+
     fn handle_lifecycle(
         &mut self,
         native: &str,
@@ -1037,10 +1115,36 @@ impl CollectorCore {
                 // end of life for the market. Mark as Terminal without starting
                 // a discontinuity incident, then remove.
                 state.set_continuity(crate::model::ContinuityState::Terminal);
+            } else {
+                // Untracked terminal notifications have nothing to apply and
+                // nothing to reconcile; count them so the event stream is not
+                // silently dropped.
+                self.stats.lifecycle_unknown_symbols =
+                    self.stats.lifecycle_unknown_symbols.saturating_add(1);
+                debug!(%native, ?kind, "terminal lifecycle event for an untracked market; nothing to apply");
             }
             return self.remove_market(native, meta.received_at_us, true);
         }
         let Some(state) = self.markets.get_mut(native) else {
+            self.stats.lifecycle_unknown_symbols =
+                self.stats.lifecycle_unknown_symbols.saturating_add(1);
+            if matches!(
+                kind,
+                LifecycleKind::Created
+                    | LifecycleKind::Activated
+                    | LifecycleKind::NewMarket
+                    | LifecycleKind::Other(_)
+            ) {
+                // The event may be real (newly created market before the next
+                // discovery round) or stale (market skipped by the MVE filter).
+                // Either way the subscription universe must not be left
+                // silently behind the authoritative catalog: request a
+                // reconciliation and leave a visible counter.
+                self.lifecycle_reconcile_pending = true;
+                warn!(%native, ?kind, "lifecycle event for an untracked market; requesting out-of-cycle discovery reconciliation");
+            } else {
+                debug!(%native, ?kind, "lifecycle event for an untracked market; nothing to apply");
+            }
             return Vec::new();
         };
         let LifecycleMetadata {
@@ -1171,12 +1275,13 @@ impl CollectorCore {
     /// snapshot timestamp.
     pub fn handle_status(&mut self, status: SourceStatus, now_us: i64) -> Vec<OutputMessage> {
         let source = status.source;
-        if source.shard as usize >= self.shards.len() {
-            return Vec::new();
-        }
+        // Out-of-book-plane sources (the dedicated lifecycle control plane,
+        // shard == LIFECYCLE_SHARD) are tracked for reporting but own no
+        // books, so they can never seed or lose continuity.
+        let in_book_plane = (source.shard as usize) < self.shards.len();
         let was_connected = self.statuses.get(&source).is_some_and(|old| old.connected);
         self.statuses.insert(source, status.clone());
-        if status.connected || !was_connected {
+        if status.connected || !was_connected || !in_book_plane {
             return Vec::new();
         }
         if self.shutting_down {

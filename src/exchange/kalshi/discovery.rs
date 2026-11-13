@@ -125,8 +125,9 @@ impl KalshiExchange {
         let base = Url::parse(&format!(
             "{}/",
             self.settings()
-                .environment
-                .rest_base()
+                .rest_url
+                .as_deref()
+                .unwrap_or(self.settings().environment.rest_base())
                 .trim_end_matches('/')
         ))
         .context("invalid Kalshi REST base URL")?;

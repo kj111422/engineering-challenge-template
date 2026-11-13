@@ -74,6 +74,15 @@ pub struct KalshiSettings {
     pub request_timeout_secs: u64,
     /// Delay between discovery pages, to stay well inside rate limits.
     pub discovery_page_delay_ms: u64,
+    /// Override the REST base URL. Production leaves this unset and uses the
+    /// selected environment; the loopback mock exchange in the integration
+    /// tests sets it. Never use this to point a credentialed run at a host
+    /// you do not control.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rest_url: Option<String>,
+    /// Override the websocket URL. Same contract as `rest_url`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ws_url: Option<String>,
 }
 
 impl Default for KalshiSettings {
@@ -86,6 +95,8 @@ impl Default for KalshiSettings {
             discovery_page_size: 1000,
             request_timeout_secs: 20,
             discovery_page_delay_ms: 50,
+            rest_url: None,
+            ws_url: None,
         }
     }
 }
@@ -163,6 +174,14 @@ pub struct CollectorSettings {
     /// cap is applied between records, never inside one record's outcome set.
     /// Kalshi publishes one symbol per market, so the same contract applies.
     pub max_markets: usize,
+    /// Dedicated market-lifecycle control-plane connections. Book shards carry
+    /// only order-book subscriptions; this many supervised lifecycle sockets
+    /// carry `market_lifecycle_v2`. Kalshi-only: other venues expose no
+    /// separate lifecycle channel and ignore this value (it is not counted in
+    /// their connection budget). Set to 0 to disable the lifecycle plane;
+    /// new markets then enter only via REST discovery and terminal removals
+    /// are deferred to the reconciliation cadence.
+    pub lifecycle_replicas: usize,
     /// Optional run duration; 0 means run until SIGINT/SIGTERM.
     pub duration_secs: u64,
     /// Maximum accepted outbound writer backlog before the service fails.
@@ -234,6 +253,7 @@ impl Default for CollectorSettings {
             // padding is written on chunk rotation and at close.
             flush_interval_secs: 1,
             max_markets: 0,
+            lifecycle_replicas: 1,
             duration_secs: 0,
             writer_send_timeout_secs: 30,
             max_total_connections: 64,
@@ -581,6 +601,10 @@ impl Settings {
         anyhow::ensure!(self.collector.shards <= 256, "shards must be <= 256");
         anyhow::ensure!(self.collector.replicas >= 1, "replicas must be >= 1");
         anyhow::ensure!(self.collector.replicas <= 4, "replicas must be <= 4");
+        anyhow::ensure!(
+            self.collector.lifecycle_replicas <= 4,
+            "lifecycle_replicas must be <= 4"
+        );
         anyhow::ensure!(
             self.collector.max_symbols_per_socket > 0,
             "max_symbols_per_socket must be > 0"
@@ -1262,6 +1286,14 @@ mod tests {
         settings.collector.max_total_connections = settings.collector.replicas - 1;
         assert!(settings.validate().is_err());
         settings.collector.max_total_connections = 64;
+
+        settings.collector.lifecycle_replicas = 5;
+        assert!(settings.validate().is_err());
+        settings.collector.lifecycle_replicas = 1;
+        assert!(settings.validate().is_ok());
+        settings.collector.lifecycle_replicas = 0;
+        assert!(settings.validate().is_ok());
+        settings.collector.lifecycle_replicas = 1;
 
         settings.collector.connect_concurrency = 0;
         assert!(settings.validate().is_err());

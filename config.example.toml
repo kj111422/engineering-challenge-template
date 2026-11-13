@@ -31,6 +31,11 @@ final_snapshots = true
 writer_queue = 16384
 flush_interval_secs = 1
 max_markets = 0
+# Dedicated lifecycle control plane (Kalshi only): supervised sockets that
+# carry market_lifecycle_v2 so book shards never see lifecycle traffic. Book
+# connections are unaffected. Set to 0 to disable; new markets then enter only
+# via REST discovery. Lifecycle sockets are counted in max_total_connections.
+lifecycle_replicas = 1
 duration_secs = 0
 writer_send_timeout_secs = 30
 # Hard startup gates. The capacity plan is rejected before any socket opens

@@ -1473,3 +1473,121 @@ fn terminal_lifecycle_removes_market_without_discontinuity_incident() {
     assert!(!core.markets.contains_key("A"));
     assert_eq!(core.stats().discontinuity_incidents, incident_count_before);
 }
+
+fn lifecycle_kind(native: &str, kind: LifecycleKind, exchange_ts_us: Option<i64>) -> ExchangeEvent {
+    ExchangeEvent::Lifecycle {
+        native_symbol: native.to_owned(),
+        kind,
+        close_time_us: None,
+        title: None,
+        tick_size_us: None,
+        price_ranges: None,
+        price_level_structure: None,
+        meta: EventMeta {
+            received_at_us: NOW,
+            exchange_ts_us,
+            seq: Some(1),
+            clock: None,
+            connection_epoch: 0,
+            receive_seq: 0,
+        },
+    }
+}
+
+#[test]
+fn lifecycle_terminal_is_applied_once_across_connections() {
+    let mut core = core();
+    discover_one(&mut core);
+    core.handle_event(SOURCE_A, snapshot_event("A", 400_000, 600_000, 0));
+
+    let first = core.handle_event(
+        SOURCE_A,
+        lifecycle_kind("A", LifecycleKind::Determined, Some(123_456)),
+    );
+    assert_eq!(core.stats().lifecycle_events, 1);
+    assert_eq!(core.stats().removed_symbols, 1);
+    assert_eq!(first.len(), 1);
+
+    // The same venue notification arrives on the second lifecycle replica.
+    let second = core.handle_event(
+        SOURCE_B,
+        lifecycle_kind("A", LifecycleKind::Determined, Some(123_456)),
+    );
+    assert!(second.is_empty());
+    assert_eq!(core.stats().lifecycle_events, 1);
+    assert_eq!(core.stats().lifecycle_duplicates, 1);
+    assert_eq!(core.stats().removed_symbols, 1);
+}
+
+#[test]
+fn lifecycle_created_on_untracked_market_requests_reconciliation() {
+    let mut core = core();
+
+    let outputs = core.handle_event(
+        SOURCE_A,
+        lifecycle_kind("NEW", LifecycleKind::Created, Some(100)),
+    );
+    assert!(outputs.is_empty());
+    assert_eq!(core.stats().lifecycle_unknown_symbols, 1);
+    assert!(core.take_lifecycle_reconcile_request());
+    assert!(!core.take_lifecycle_reconcile_request());
+
+    // The duplicate delivery on the second control socket does not re-arm.
+    let _ = core.handle_event(
+        SOURCE_B,
+        lifecycle_kind("NEW", LifecycleKind::Created, Some(100)),
+    );
+    assert!(!core.take_lifecycle_reconcile_request());
+    assert_eq!(core.stats().lifecycle_duplicates, 1);
+    assert_eq!(core.stats().lifecycle_unknown_symbols, 1);
+}
+
+#[test]
+fn lifecycle_terminal_on_untracked_market_is_counted_without_reconciliation() {
+    let mut core = core();
+
+    let _ = core.handle_event(
+        SOURCE_A,
+        lifecycle_kind("GONE", LifecycleKind::Settled, Some(200)),
+    );
+    assert_eq!(core.stats().lifecycle_unknown_symbols, 1);
+    assert!(!core.take_lifecycle_reconcile_request());
+}
+
+#[test]
+fn lifecycle_without_exchange_timestamp_applies_every_time() {
+    let mut core = core();
+    discover_one(&mut core);
+
+    let _ = core.handle_event(
+        SOURCE_A,
+        lifecycle_kind("A", LifecycleKind::MetadataUpdated, None),
+    );
+    let _ = core.handle_event(
+        SOURCE_A,
+        lifecycle_kind("A", LifecycleKind::MetadataUpdated, None),
+    );
+    assert_eq!(core.stats().lifecycle_events, 2);
+    assert_eq!(core.stats().lifecycle_duplicates, 0);
+}
+
+#[test]
+fn out_of_book_plane_status_is_tracked_without_opening_incidents() {
+    let mut core = core();
+    discover_one(&mut core);
+
+    let lifecycle_source = SourceId::new(u16::MAX, 0);
+    let mut status = SourceStatus::new(lifecycle_source);
+    status.connected = true;
+    status.reconnects = 2;
+    let outputs = core.handle_status(status, NOW + 5_000_000);
+    assert!(outputs.is_empty());
+    assert!(core.statuses().contains_key(&lifecycle_source));
+
+    let mut status = SourceStatus::new(lifecycle_source);
+    status.connected = false;
+    let outputs = core.handle_status(status, NOW + 6_000_000);
+    assert!(outputs.is_empty());
+    assert_eq!(core.stats().discontinuity_incidents, 0);
+    assert!(core.statuses().contains_key(&lifecycle_source));
+}

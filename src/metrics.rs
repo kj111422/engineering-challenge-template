@@ -56,6 +56,16 @@ pub struct CollectorStats {
     pub crossed_snapshots_skipped: u64,
     pub duplicate_events: u64,
     pub lifecycle_events: u64,
+    /// Duplicate events (same market, kind and exchange timestamp) skipped by
+    /// the lifecycle deduplication barrier. Non-zero is expected when
+    /// `lifecycle_replicas > 1`.
+    #[serde(default)]
+    pub lifecycle_duplicates: u64,
+    /// Lifecycle events whose market is not (or no longer) tracked. Unknown
+    /// Create/Activate events additionally request an out-of-cycle REST
+    /// reconciliation; never silently dropped.
+    #[serde(default)]
+    pub lifecycle_unknown_symbols: u64,
     pub current_symbols: u64,
     pub shard_count: u64,
     /// Discontinuity incidents detected (gaps in event continuity)

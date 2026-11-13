@@ -103,6 +103,13 @@ The root `run-manifest.json` records the source commit, run times, evidence
 tier, scope, venue statuses, and hashes of the two evidence manifests. It
 contains no API keys, private keys, or proxy credentials.
 
+Kalshi collection uses a dedicated lifecycle control plane: book shards carry
+only order-book subscriptions, and `collector.lifecycle_replicas` supervised
+sockets (default 1) carry `market_lifecycle_v2`. Lifecycle notifications are
+deduplicated across replicas; lifecycle reconnects and notifications for
+untracked markets trigger an out-of-cycle REST reconciliation. Lifecycle
+sockets count toward `max_total_connections` in the startup capacity plan.
+
 The script only marks a venue `verified` when discovery returned symbols,
 at least one exchange-originated snapshot was processed, SBE messages were
 written, snapshot/delta reconstruction is valid, `coverage` reports

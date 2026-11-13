@@ -384,3 +384,59 @@ trailing bytes, fail-closed rejection with no venue dial, manifest
 provenance without credentials, `network-probe` direct/proxy/config
 failure), `src/egress.rs` unit tests (env-lookup injection; no process-global
 state is touched by the tests).
+
+## 12. Dedicated Kalshi lifecycle control plane
+
+**Context.** Every Kalshi order-book websocket sent its own
+`market_lifecycle_v2` subscription, so a 74-shard, two-replica run opened
+roughly 148 lifecycle subscriptions and applied each notification up to 148
+times. A control-channel error could also fail the book data path, and no
+component owned the lifecycle stream's reconnect semantics.
+
+**Decision.** Book shards carry only `orderbook_delta`. A dedicated,
+supervised lifecycle plane (`collector.lifecycle_replicas`, Kalshi-only,
+default 1, maximum 4) owns `market_lifecycle_v2`. The core deduplicates
+notifications across replicas by `(market, kind, exchange timestamp)` with a
+bounded window; unknown Create/Activate notifications force an out-of-cycle
+REST reconciliation (debounced and shared with the periodic ticker) instead
+of silently diverging from the authoritative catalog; lifecycle reconnects
+trigger a REST reconciliation so notifications missed while disconnected are
+recovered; terminal notifications retire a tracked market exactly once, and
+terminal notifications for untracked markets are counted, not dropped.
+Lifecycle sockets are charged to the capacity plan's connection budget
+(`max_total_connections`), and carry no order-book subscriptions into the
+subscription universe.
+
+**Alternatives.** Per-socket lifecycle subscriptions (status quo — fan-out
+and misattribution); one lifecycle socket with no redundancy; subscribing
+book replicas anyway and filtering client-side; or treating periodic REST
+as the only lifecycle signal (up to a full reconciliation interval of
+staleness for terminal events).
+
+**Consequences.** One (or a few) supervised control sockets replace every
+book shard subscribing. Duplicate deliveries across lifecycle replicas are
+applied once. The subscription universe can still temporarily diverge from
+the truth when the venue creates a market mid-interval, but the divergence
+is surfaced (counter and a forced reconciliation), never silent. Lifecycle
+sockets consume the shared connection ceiling; operators budget for them the
+same as book sockets. Polymarket is unaffected: it publishes lifecycle
+notifications on the market channel, not a separate one.
+
+**Implementation.** `src/exchange/kalshi/session.rs` (`SessionMode`,
+`LifecycleSessionFactory`), `src/exchange/kalshi/mod.rs` (optional
+`Exchange::lifecycle_session_factory`), `src/exchange/mod.rs`,
+`src/coordinator.rs` (lifecycle spawn, `DiscoveryPlane`, drain and fatal-check
+semantics, `LIFECYCLE_SHARD`), `src/collector/state.rs` (dedup window,
+reconcile request flag, out-of-book-plane status handling),
+`src/metrics.rs` (`lifecycle_duplicates`, `lifecycle_unknown_symbols`),
+`src/config.rs` (`collector.lifecycle_replicas`), `src/capacity.rs`.
+
+**Verification.** `tests/kalshi_lifecycle_plane.rs` (book sockets never
+subscribe; exactly the configured lifecycle connection count; capacity and
+report accounting; unknown Create forces an out-of-cycle reconciliation;
+terminal `settled` retires the market exactly once; lifecycle reconnect
+consults REST), `src/exchange/kalshi/session.rs` (`SessionMode` book and
+lifecycle command discipline), `src/collector/state/tests.rs` (dedup,
+reconciliation request, untracked terminal accounting, out-of-book-plane
+status), `src/capacity.rs` (Kalshi connection budget including the plane),
+`tests/session_recovery.rs`, `scripts/check_architecture.py`.

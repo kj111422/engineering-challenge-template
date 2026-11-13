@@ -28,7 +28,7 @@ The collector enforces hard startup gates via [`capacity::plan`](../src/capacity
 | Limit | Formula | Default | Rationale |
 |-------|---------|---------|-----------|
 | `max_symbols_per_socket` | `symbols / shards` | 5,000 | Polymarket WebSocket frame size limits; empirical stability ceiling. |
-| `max_total_connections` | `shards × replicas` | 64 | Built-in planning default; deployment overrides must be stated separately. |
+| `max_total_connections` | `shards × replicas + lifecycle_connections` (Kalshi: `+ lifecycle_replicas`, default 1) | 64 | Built-in planning default; deployment overrides must be stated separately. |
 | `max_initial_subscription_bytes` | `overhead + max_symbols_per_socket × (longest_symbol + 3)` | 1 MiB | Initial `market` subscribe frame must fit in one WebSocket message. |
 | `max_estimated_book_memory_mb` | `outcome_symbols × 4096 bytes` | 1 GiB | Planning estimate, not an RSS ceiling: book level maps are unbounded. |
 | `max_snapshot_bytes_per_sec` | `outcome_symbols × snapshot_size / snapshot_interval` | 16 MiB/s | Planning estimate for periodic snapshot bandwidth. |
@@ -84,6 +84,7 @@ All capacity knobs live under `collector.*` in the settings file:
 [collector]
 shards = 0              # 0 = derive from max_symbols_per_socket
 replicas = 2
+lifecycle_replicas = 1  # Kalshi lifecycle control plane; 0 disables; counted in max_total_connections
 max_symbols_per_socket = 5000
 max_shards = 64
 max_total_connections = 512
@@ -92,6 +93,12 @@ max_estimated_book_memory_mb = 4096
 max_snapshot_bytes_per_sec = 67108864
 snapshot_interval_secs = 60
 ```
+
+For Kalshi, the capacity plan adds `lifecycle_replicas` supervised
+`market_lifecycle_v2` sockets to `total_connections` and rejects the
+configuration if the total exceeds `max_total_connections`. Book shards never
+subscribe to the lifecycle channel. Polymarket has no separate lifecycle
+channel; `lifecycle_replicas` is ignored and not charged.
 
 ## Readiness Gates
 
