@@ -216,7 +216,7 @@ else
   echo "[polymarket] skipped: set POLYMARKET_MARKET_DATA_ACCESS_CONFIRMED=1 only after checking current venue terms and local law"
 fi
 
-if [[ "${KALSHI_MARKET_DATA_ACCESS_CONFIRMED:-0}" == "1" ]]; then
+if [[ "${KALSHI_READ_ONLY_ACCESS_CONFIRMED:-0}" == "1" ]]; then
   if [[ -z "${KALSHI_API_KEY_ID:-}" ]]; then
     KALSHI_STATUS="blocked_missing_api_key_id"
     echo "[kalshi] blocked: KALSHI_API_KEY_ID is not set" >&2
@@ -234,7 +234,7 @@ if [[ "${KALSHI_MARKET_DATA_ACCESS_CONFIRMED:-0}" == "1" ]]; then
   fi
 else
   KALSHI_STATUS="skipped_permission_not_confirmed"
-  echo "[kalshi] skipped: set KALSHI_MARKET_DATA_ACCESS_CONFIRMED=1 only after confirming read-only API access is allowed for this location/account"
+  echo "[kalshi] skipped: set KALSHI_READ_ONLY_ACCESS_CONFIRMED=1 only after confirming read-only API access is allowed for this location/account"
 fi
 
 COMPLETED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"

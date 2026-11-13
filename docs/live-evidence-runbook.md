@@ -7,26 +7,36 @@ raw-frame journal, and verifies both outputs.
 
 ## Access conditions
 
-Run from the machine and network on which you are physically located. This
-procedure does not use a VPN, proxy, hosted runner, or other alternate egress
-path to bypass a venue's geographic restrictions. The application defaults to
-direct egress.
+Run only from the machine and network on which you are physically located, and
+only where access to the venue is permitted. This procedure does not use a VPN,
+proxy, alternate DNS, hosted runner, or other alternate egress path to bypass a
+venue's geographic restrictions. The application defaults to direct egress.
 
-Before running, check the venues' current terms and applicable local law:
+**A venue's published blocklist is not proof that access is permitted.**
+Geoblocking lists are incomplete, change independently of the law, and do not
+establish that read-only market-data access is allowed. Check the current
+official documents and any applicable local law before running; this runbook is
+not legal advice.
 
 - [Polymarket geographic restrictions](https://help.polymarket.com/en/articles/13364163-geographic-restrictions)
-  lists countries and regions where access is blocked and explicitly forbids
-  VPN-based circumvention. India is not listed on the current published blocked
-  country list, but that is not legal advice or a substitute for checking the
-  current terms and local requirements.
-- [Kalshi Member Agreement](https://kalshi.com/docs/kalshi-member-agreement.pdf),
-  Section VI, lists India as restricted for event-contract trading. The same
-  section says those restrictions apply solely to trading and do not, by
-  themselves, prohibit non-trading access, subject to applicable law and
-  Kalshi policy. This repository therefore requires an explicit operator
-  confirmation for Kalshi read-only API access; obtain clarification from
-  Kalshi where necessary. Do not use the event-contract API to place, modify,
-  or cancel orders.
+  currently lists 40 blocked countries and regions and explicitly prohibits
+  VPN-based circumvention. India is not on that list, but that absence does not
+  establish permission. An Indian Ministry of Electronics and Information
+  Technology advisory dated 25 April 2026 names Polymarket and similar
+  prediction-market platforms as already blocked for access in India under
+  section 69A of the Information Technology Act, 2000, and warns VPN providers
+  and intermediaries against facilitating access or circumvention. If you are
+  in India, do not run the Polymarket venue unless you have documented
+  confirmation that the specific read-only access is permitted.
+- The [Kalshi Member Agreement](https://kalshi.com/docs/kalshi-member-agreement.pdf)
+  (v1.6 at the time of writing) prohibits access, use, or trading where
+  applicable law or Kalshi policy prohibits it, but it does not enumerate every
+  restricted jurisdiction. The absence of India from its Restricted
+  Jurisdictions list therefore does not establish permission either. Treat
+  event-contract trading as restricted in India, and obtain explicit
+  confirmation from Kalshi that authenticated read-only market-data access is
+  permitted for your account and location before enabling it. Do not use the
+  event-contract API to place, modify, or cancel orders.
 
 ## Prerequisites
 
@@ -41,7 +51,7 @@ venue terms and applicable law:
 
 ```bash
 export POLYMARKET_MARKET_DATA_ACCESS_CONFIRMED=1
-export KALSHI_MARKET_DATA_ACCESS_CONFIRMED=1
+export KALSHI_READ_ONLY_ACCESS_CONFIRMED=1
 ```
 
 Kalshi credentials are read from environment variables. Prefer a protected

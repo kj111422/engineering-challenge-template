@@ -88,13 +88,13 @@ python3 scripts/check_matrix_tests.py
 python3 -m unittest discover -s scripts -p 'test_*.py'
 ```
 
-Live venue tests are opt-in and must run from an operator-managed machine in a location where access is permitted. Kalshi requires authenticated read-only API credentials and an explicit permission check. Do not use a VPN, proxy, or hosted runner to bypass geographic restrictions. See the [live evidence runbook](docs/live-evidence-runbook.md).
+Live venue tests are opt-in and must run from an operator-managed machine in a location where access is permitted. Kalshi requires authenticated read-only API credentials and an explicit permission check. Do not use a VPN, proxy, or hosted runner to bypass geographic restrictions, and do not treat a venue's published blocklist as proof that access is permitted. See the [live evidence runbook](docs/live-evidence-runbook.md).
 
 To produce actual SBE and raw-frame evidence for both venues from the local machine:
 
 ```bash
 export POLYMARKET_MARKET_DATA_ACCESS_CONFIRMED=1
-export KALSHI_MARKET_DATA_ACCESS_CONFIRMED=1
+export KALSHI_READ_ONLY_ACCESS_CONFIRMED=1
 export KALSHI_API_KEY_ID='…'
 export KALSHI_PRIVATE_KEY_PATH="$HOME/.config/kalshi/private-key.pem"
 LIVE_DURATION_SECS=120 LIVE_MAX_MARKETS=5 scripts/run-live-evidence.sh
