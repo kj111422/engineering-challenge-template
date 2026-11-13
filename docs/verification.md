@@ -51,9 +51,11 @@ matrix and architecture gates were run on the same tree:
 | `python3 -m unittest discover -s scripts -p 'test_*.py'` | Pass: 24 gate tests |
 | `python3 -m unittest discover -s scripts/assurance -p 'test_*.py'` | Pass: 16 assurance-tool tests |
 
-The three ignored tests are one opt-in mock scale scenario and two public-feed
-live tests. The scale scenario is exercised separately with `SCALE_SYMBOLS=N`;
-the live tests require `RUN_LIVE_TESTS=1`.
+At the recorded verification commit, the three ignored tests were one opt-in
+mock scale scenario and two Polymarket public-feed tests. The scale scenario is
+exercised separately with `SCALE_SYMBOLS=N`. A separate authenticated Kalshi
+live test has since been added as opt-in code; it has not been run or claimed
+as live evidence. See the [live evidence runbook](live-evidence-runbook.md).
 
 ## Merged change evidence
 
@@ -149,7 +151,8 @@ soak, a controlled benchmark, or a full-universe subscription claim.
 
 - 24-hour continuous live soak.
 - Full-universe simultaneous live subscription.
-- Authenticated Kalshi live validation.
+- An executed authenticated Kalshi live run. The opt-in test and capture
+  script are prepared, but no venue response was obtained in this environment.
 - Production order entry.
 - OMS and independent pre-trade risk.
 - Live execution safety.

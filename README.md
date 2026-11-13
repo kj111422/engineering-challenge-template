@@ -8,9 +8,11 @@ outcome symbol, writes the supplied FIX SBE schema, and can record the exact
 public websocket frames. The two adapters share the same core.
 
 This is a market-data system, not a trading system. It does not submit orders,
-hold positions, or run strategy or pre-trade risk. Kalshi live validation is
-blocked without credentials; Polymarket full-universe discovery is verified,
-but simultaneous subscription at that fan-out is not claimed.
+hold positions, or run strategy or pre-trade risk. The Kalshi adapter has an
+opt-in authenticated live test, but no live Kalshi run is claimed until a
+permitted production connection produces a verified capture. Polymarket
+full-universe discovery is verified, but simultaneous subscription at that
+fan-out is not claimed.
 
 The current code supports prediction markets only. The target domain, adapter
 boundaries, numeric model, event model, and compatibility rules are in the
@@ -86,11 +88,19 @@ python3 scripts/check_matrix_tests.py
 python3 -m unittest discover -s scripts -p 'test_*.py'
 ```
 
-The public Polymarket network test is opt-in:
+Live venue tests are opt-in and must run from an operator-managed machine in a location where access is permitted. Kalshi requires authenticated read-only API credentials and an explicit permission check. Do not use a VPN, proxy, or hosted runner to bypass geographic restrictions, and do not treat a venue's published blocklist as proof that access is permitted. See the [live evidence runbook](docs/live-evidence-runbook.md).
+
+To produce actual SBE and raw-frame evidence for both venues from the local machine:
 
 ```bash
-RUN_LIVE_TESTS=1 cargo test --test live_polymarket -- --ignored --nocapture
+export POLYMARKET_MARKET_DATA_ACCESS_CONFIRMED=1
+export KALSHI_READ_ONLY_ACCESS_CONFIRMED=1
+export KALSHI_API_KEY_ID='…'
+export KALSHI_PRIVATE_KEY_PATH="$HOME/.config/kalshi/private-key.pem"
+LIVE_DURATION_SECS=120 LIVE_MAX_MARKETS=5 scripts/run-live-evidence.sh
 ```
+
+The script refuses to claim a dual-venue success if either venue is skipped or a capture/journal verification fails.
 
 ## Scope and provenance
 
