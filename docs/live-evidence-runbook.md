@@ -150,8 +150,11 @@ expected symbols = acknowledged symbols = snapshot-anchored symbols
 
 The certificate is `valid` only when the expected set is non-empty, every
 expected symbol was acknowledged and anchored, no acknowledged symbol is
-outside the expected set, no expected symbol is duplicated, and every
-acknowledged native identifier maps to metadata. Captured symbols outside the
+outside the expected set, no expected symbol is duplicated, every
+acknowledged native identifier maps to metadata, and the capture decodes
+exactly as many messages as the run report's writer accepted. A truncated
+capture cannot certify as complete: bytes lost before shutdown fail the
+certificate instead of being silently absorbed. Captured symbols outside the
 expected set are listed under `anchored_not_expected` and accounted separately;
 these are typically markets retired by a later discovery round.
 

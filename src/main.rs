@@ -111,14 +111,18 @@ async fn main() -> anyhow::Result<()> {
                 summary.valid,
                 "coverage failed: expected {} symbol(s); missing_ack={}, missing_anchor={}, \
                  ack_not_anchored={}, ack_not_expected={}, duplicate_expected={}, \
-                 unknown_ack_native={}",
+                 unknown_ack_native={}, capture_messages_match_report={} \
+                 (capture={}, report_writer_messages={})",
                 summary.expected,
                 summary.missing_ack.count,
                 summary.missing_anchor.count,
                 summary.ack_not_anchored.count,
                 summary.ack_not_expected.count,
                 summary.duplicate_expected.count,
-                summary.unknown_ack_native.count
+                summary.unknown_ack_native.count,
+                summary.capture_messages_match_report,
+                summary.capture_messages,
+                summary.report_writer_messages
             );
             Ok(())
         }

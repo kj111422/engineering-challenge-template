@@ -3,7 +3,9 @@
 //! `completeness` answers whether deltas arrived after a baseline. This report
 //! answers the question a live-evidence claim depends on: **did every symbol
 //! the run was supposed to collect actually get subscribed and snapshot
-//! anchored?** It compares three sets:
+//! anchored?** It compares three sets and cross-checks the capture against
+//! the run report's writer counter (a truncated capture cannot certify as
+//! complete):
 //!
 //! - **expected**: the normalized symbols in the metadata sidecar written by
 //!   the collector (`markets.json`);
@@ -108,6 +110,14 @@ pub struct CoverageSummary {
     /// SHA-256 of the sorted expected symbols, newline-separated with a
     /// trailing newline. Pins the exact expected universe to the evidence.
     pub expected_set_sha256: String,
+    /// SBE messages read while certifying the capture.
+    pub capture_messages: u64,
+    /// SBE messages the run report's writer accepted. Must equal
+    /// `capture_messages`; a truncated capture cannot certify as complete.
+    pub report_writer_messages: u64,
+    /// `true` when the capture decodes exactly as many messages as the run
+    /// report's writer accepted.
+    pub capture_messages_match_report: bool,
     /// Expected symbols with no successful subscription request.
     pub missing_ack: BoundedList,
     /// Expected symbols with no snapshot in the capture.
@@ -144,7 +154,8 @@ pub fn run(
 ) -> anyhow::Result<CoverageSummary> {
     let metadata: MarketMetadata = read_json(metadata_path, "metadata sidecar")?;
     let report: RunReport = read_json(report_path, "run report")?;
-    let observed = scan_capture(input, chunk_size)?;
+    let (observed, capture_messages) = scan_capture(input, chunk_size)?;
+    let report_writer_messages = report.writer.messages;
 
     let mut expected_counts: BTreeMap<String, usize> = BTreeMap::new();
     let mut native_to_symbol: BTreeMap<String, String> = BTreeMap::new();
@@ -159,6 +170,8 @@ pub fn run(
         &native_to_symbol,
         &report.acknowledged_symbols,
         &observed,
+        capture_messages,
+        report_writer_messages,
         input.display().to_string(),
         metadata_path.display().to_string(),
         report_path.display().to_string(),
@@ -171,6 +184,8 @@ fn certify(
     native_to_symbol: &BTreeMap<String, String>,
     ack_native: &[String],
     observed: &ObservedSymbols,
+    capture_messages: u64,
+    report_writer_messages: u64,
     capture: String,
     metadata: String,
     report: String,
@@ -218,13 +233,19 @@ fn certify(
     let duplicate_expected = BoundedList::from_set(&duplicate_expected);
     let unknown_ack_native = BoundedList::from_set(&unknown_ack_native);
 
+    // A capture whose decoded message count differs from the run report's
+    // writer counter cannot establish complete per-symbol coverage: bytes
+    // were lost or the report came from a different run.
+    let capture_messages_match_report = capture_messages == report_writer_messages;
+
     let valid = !expected.is_empty()
         && missing_ack.is_empty()
         && missing_anchor.is_empty()
         && ack_not_anchored.is_empty()
         && ack_not_expected.is_empty()
         && duplicate_expected.is_empty()
-        && unknown_ack_native.is_empty();
+        && unknown_ack_native.is_empty()
+        && capture_messages_match_report;
 
     CoverageSummary {
         schema_version: COVERAGE_SCHEMA_VERSION,
@@ -237,6 +258,9 @@ fn certify(
         observed: observed.all.len(),
         valid,
         expected_set_sha256: digest_expected(&expected),
+        capture_messages,
+        report_writer_messages,
+        capture_messages_match_report,
         missing_ack,
         missing_anchor,
         ack_not_anchored,
@@ -253,7 +277,7 @@ struct ObservedSymbols {
     all: BTreeSet<String>,
 }
 
-fn scan_capture(input: &Path, chunk_size: &str) -> anyhow::Result<ObservedSymbols> {
+fn scan_capture(input: &Path, chunk_size: &str) -> anyhow::Result<(ObservedSymbols, u64)> {
     let mut reader = if chunk_size.eq_ignore_ascii_case("auto") {
         AlignedSbeReader::<OrderbookSchema>::open_auto(input)
             .with_context(|| format!("opening `{}` with auto chunk detection", input.display()))?
@@ -267,7 +291,9 @@ fn scan_capture(input: &Path, chunk_size: &str) -> anyhow::Result<ObservedSymbol
 
     let mut anchored = BTreeSet::new();
     let mut all = BTreeSet::new();
+    let mut messages = 0u64;
     while let Some(message) = reader.read_msg()? {
+        messages = messages.saturating_add(1);
         match message {
             AnyMessage::Snapshot(decoder) => {
                 let snapshot =
@@ -285,7 +311,7 @@ fn scan_capture(input: &Path, chunk_size: &str) -> anyhow::Result<ObservedSymbol
             AnyMessage::Unknown { .. } => {}
         }
     }
-    Ok(ObservedSymbols { anchored, all })
+    Ok((ObservedSymbols { anchored, all }, messages))
 }
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path, label: &str) -> anyhow::Result<T> {
@@ -347,6 +373,8 @@ mod tests {
                 .map(|value| (*value).to_owned())
                 .collect::<Vec<_>>(),
             observed,
+            2,
+            2,
             "capture.sbe".to_owned(),
             "markets.json".to_owned(),
             "report.json".to_owned(),
@@ -395,6 +423,8 @@ mod tests {
             &native_map(&[("a", "A"), ("z", "Z")]),
             &["a".to_owned(), "z".to_owned()],
             &observed(&["A", "Z"], &[]),
+            2,
+            2,
             "capture.sbe".to_owned(),
             "markets.json".to_owned(),
             "report.json".to_owned(),
@@ -427,6 +457,8 @@ mod tests {
             &native_map(&[("asset", "polymarket:condition:0")]),
             &["unknown-asset".to_owned()],
             &observed(&["polymarket:condition:0"], &[]),
+            1,
+            1,
             "capture.sbe".to_owned(),
             "markets.json".to_owned(),
             "report.json".to_owned(),
@@ -472,6 +504,25 @@ mod tests {
         assert_eq!(list.count, 2);
         assert!(!list.truncated);
         assert_eq!(list.sample, vec!["A".to_owned(), "B".to_owned()]);
+    }
+
+    #[test]
+    fn truncated_capture_cannot_certify_complete_coverage() {
+        let result = certify(
+            &counts(&["A"]),
+            &BTreeMap::new(),
+            &["A".to_owned()],
+            &observed(&["A"], &[]),
+            1,
+            2,
+            "capture.sbe".to_owned(),
+            "markets.json".to_owned(),
+            "report.json".to_owned(),
+        );
+        assert!(!result.valid);
+        assert!(!result.capture_messages_match_report);
+        assert_eq!(result.capture_messages, 1);
+        assert_eq!(result.report_writer_messages, 2);
     }
 
     #[test]

@@ -63,8 +63,9 @@ fn update(symbol: &str, received_us: i64) -> OutputMessage {
     })
 }
 
-fn write_capture(directory: &Path, messages: Vec<OutputMessage>) -> PathBuf {
+fn write_capture(directory: &Path, messages: Vec<OutputMessage>) -> (PathBuf, usize) {
     let path = directory.join("capture.sbe");
+    let count = messages.len();
     let mut writer = DirectWriter::create(engineering_challenge::writer::WriterOptions {
         path: path.to_str().unwrap().to_owned(),
         chunk_size: 4096,
@@ -81,7 +82,7 @@ fn write_capture(directory: &Path, messages: Vec<OutputMessage>) -> PathBuf {
         writer.write(&message).unwrap();
     }
     writer.shutdown().unwrap();
-    path
+    (path, count)
 }
 
 fn market(symbol: &str) -> MarketInfo {
@@ -111,7 +112,7 @@ fn write_metadata(directory: &Path, symbols: &[&str]) -> PathBuf {
     path
 }
 
-fn write_report(directory: &Path, acknowledged: &[&str]) -> PathBuf {
+fn write_report(directory: &Path, acknowledged: &[&str], writer_messages: usize) -> PathBuf {
     let path = directory.join("report.json");
     let settings = Settings::for_exchange(ExchangeKind::Kalshi);
     let mut report = RunReport::new(
@@ -127,7 +128,10 @@ fn write_report(directory: &Path, acknowledged: &[&str]) -> PathBuf {
         acknowledged.len(),
         acknowledged.len(),
         CollectorStats::default(),
-        WriterStats::default(),
+        WriterStats {
+            messages: writer_messages as u64,
+            ..WriterStats::default()
+        },
         Vec::new(),
         ReportConfig::from_settings(&settings, 1),
     );
@@ -142,7 +146,7 @@ fn write_report(directory: &Path, acknowledged: &[&str]) -> PathBuf {
 #[test]
 fn complete_universe_including_empty_book_snapshot_is_certified() {
     let directory = tempfile::tempdir().unwrap();
-    let capture = write_capture(
+    let (capture, capture_messages) = write_capture(
         directory.path(),
         vec![
             snapshot("A", 10, false),
@@ -151,7 +155,7 @@ fn complete_universe_including_empty_book_snapshot_is_certified() {
         ],
     );
     let metadata = write_metadata(directory.path(), &["A", "B"]);
-    let report = write_report(directory.path(), &["A", "B"]);
+    let report = write_report(directory.path(), &["A", "B"], capture_messages);
 
     let summary = coverage::run(&capture, &metadata, &report, "4096").unwrap();
     assert!(summary.valid, "{summary:?}");
@@ -165,9 +169,10 @@ fn complete_universe_including_empty_book_snapshot_is_certified() {
 #[test]
 fn acknowledged_symbol_without_snapshot_fails_certification() {
     let directory = tempfile::tempdir().unwrap();
-    let capture = write_capture(directory.path(), vec![snapshot("A", 10, false)]);
+    let (capture, capture_messages) =
+        write_capture(directory.path(), vec![snapshot("A", 10, false)]);
     let metadata = write_metadata(directory.path(), &["A", "B"]);
-    let report = write_report(directory.path(), &["A", "B"]);
+    let report = write_report(directory.path(), &["A", "B"], capture_messages);
 
     let summary = coverage::run(&capture, &metadata, &report, "4096").unwrap();
     assert!(!summary.valid);
@@ -181,12 +186,12 @@ fn acknowledged_symbol_without_snapshot_fails_certification() {
 #[test]
 fn update_only_symbol_is_not_anchored() {
     let directory = tempfile::tempdir().unwrap();
-    let capture = write_capture(
+    let (capture, capture_messages) = write_capture(
         directory.path(),
         vec![snapshot("A", 10, false), update("B", 20)],
     );
     let metadata = write_metadata(directory.path(), &["A", "B"]);
-    let report = write_report(directory.path(), &["A", "B"]);
+    let report = write_report(directory.path(), &["A", "B"], capture_messages);
 
     let summary = coverage::run(&capture, &metadata, &report, "4096").unwrap();
     assert!(!summary.valid);
@@ -199,12 +204,12 @@ fn update_only_symbol_is_not_anchored() {
 #[test]
 fn retired_captured_symbol_is_reported_but_does_not_fail() {
     let directory = tempfile::tempdir().unwrap();
-    let capture = write_capture(
+    let (capture, capture_messages) = write_capture(
         directory.path(),
         vec![snapshot("A", 10, false), snapshot("B", 20, true)],
     );
     let metadata = write_metadata(directory.path(), &["A"]);
-    let report = write_report(directory.path(), &["A"]);
+    let report = write_report(directory.path(), &["A"], capture_messages);
 
     let summary = coverage::run(&capture, &metadata, &report, "4096").unwrap();
     assert!(summary.valid);
@@ -214,9 +219,10 @@ fn retired_captured_symbol_is_reported_but_does_not_fail() {
 #[test]
 fn cli_exits_zero_for_a_complete_certificate() {
     let directory = tempfile::tempdir().unwrap();
-    let capture = write_capture(directory.path(), vec![snapshot("A", 10, true)]);
+    let (capture, capture_messages) =
+        write_capture(directory.path(), vec![snapshot("A", 10, true)]);
     let metadata = write_metadata(directory.path(), &["A"]);
-    let report = write_report(directory.path(), &["A"]);
+    let report = write_report(directory.path(), &["A"], capture_messages);
 
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_engineering-challenge"))
         .args(["coverage"])
@@ -237,9 +243,10 @@ fn cli_exits_zero_for_a_complete_certificate() {
 #[test]
 fn cli_exits_non_zero_when_a_selected_symbol_is_unanchored() {
     let directory = tempfile::tempdir().unwrap();
-    let capture = write_capture(directory.path(), vec![snapshot("A", 10, false)]);
+    let (capture, capture_messages) =
+        write_capture(directory.path(), vec![snapshot("A", 10, false)]);
     let metadata = write_metadata(directory.path(), &["A", "B"]);
-    let report = write_report(directory.path(), &["A", "B"]);
+    let report = write_report(directory.path(), &["A", "B"], capture_messages);
 
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_engineering-challenge"))
         .args(["coverage"])
@@ -251,4 +258,31 @@ fn cli_exits_non_zero_when_a_selected_symbol_is_unanchored() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("coverage failed"), "stderr: {stderr}");
+}
+
+#[test]
+fn truncated_capture_cannot_certify_complete_coverage() {
+    let directory = tempfile::tempdir().unwrap();
+    // Write enough data that an abrupt end removes messages, not just
+    // trailing pad bytes.
+    let messages: Vec<_> = (0..100)
+        .map(|index| snapshot("A", index, index % 2 == 0))
+        .collect();
+    let (capture, capture_messages) = write_capture(directory.path(), messages);
+    let len = std::fs::metadata(&capture).unwrap().len();
+    assert!(len > 4096);
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&capture)
+        .unwrap();
+    file.set_len(4096).unwrap();
+    drop(file);
+
+    let metadata = write_metadata(directory.path(), &["A"]);
+    let report = write_report(directory.path(), &["A"], capture_messages);
+
+    let summary = coverage::run(&capture, &metadata, &report, "4096").unwrap();
+    assert!(!summary.valid);
+    assert!(!summary.capture_messages_match_report);
+    assert!(summary.capture_messages < summary.report_writer_messages);
 }
