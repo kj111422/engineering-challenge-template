@@ -133,6 +133,13 @@ A self-hosted runner label is an operator control, not a geographic
 verification service. Environment branch restrictions and required reviewers
 must be configured in GitHub Settings; the YAML alone cannot enforce them.
 
+After both venue tests, the workflow runs `scripts/run-live-evidence.sh` and
+uploads the complete `captures/live-*` directory as an artifact named
+`live-evidence-<run_id>-<run_attempt>`, retained for 90 days. That artifact is
+the evidence bundle: the SBE captures, raw journals, verification reports, and
+`run-manifest.json`. A green test step alone is not a retained live-evidence
+result, and a failed run still uploads whatever it produced for review.
+
 ## Evidence boundary
 
 A verified capture proves that this collector received and recorded the frames
