@@ -69,6 +69,11 @@ pub struct CollectorStats {
     pub stale_failovers: u64,
     pub crossed_snapshots_skipped: u64,
     pub duplicate_events: u64,
+    /// Delta events delivered to a non-active replica: applied to that
+    /// replica's private book and deliberately not emitted. This is a
+    /// transport duplicate, distinct from a duplicate application.
+    #[serde(default)]
+    pub suppressed_replica_duplicates: u64,
     pub lifecycle_events: u64,
     /// Duplicate events (same market, kind and exchange timestamp) skipped by
     /// the lifecycle deduplication barrier. Non-zero is expected when
@@ -717,6 +722,11 @@ impl MetricsRegistry {
             core.unquantifiable_gaps
         );
         counter!(
+            "collector_suppressed_replica_duplicates_total",
+            "Delta events applied to a non-active replica and suppressed",
+            core.suppressed_replica_duplicates
+        );
+        counter!(
             "collector_deltas_rejected_total",
             "Rejected inconsistent updates",
             core.deltas_rejected
@@ -1297,6 +1307,7 @@ mod tests {
         assert!(text.contains("# TYPE collector_deltas_emitted_total counter"));
         assert!(text.contains("# TYPE collector_discontinuity_incidents_total counter"));
         assert!(text.contains("# TYPE collector_unquantifiable_gaps_total counter"));
+        assert!(text.contains("# TYPE collector_suppressed_replica_duplicates_total counter"));
         assert!(text.contains("# TYPE collector_writer_errors_total counter"));
         assert!(text.contains("# TYPE collector_discovery_rounds_total counter"));
         assert!(text.contains("# TYPE collector_symbols_anchored gauge"));

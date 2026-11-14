@@ -68,6 +68,10 @@ pub enum FailInject {
     /// Bound the mock's outbound queue hard and stall the forwarder so the
     /// drain barrier cannot complete in time.
     MockQueueSaturate { capacity: usize },
+    /// Publish each logical delta a second time on the wire. A dedup-correct
+    /// collector still applies exactly one copy; the extra application is the
+    /// over-application the ledger must detect.
+    OverApplication { duplicates: usize },
     /// Notify shutdown immediately after publishing, without any drain wait.
     ShutdownBeforeDrain,
 }
@@ -184,6 +188,7 @@ impl CellAcceptance {
 pub struct IncidentCounters {
     pub discontinuity_incidents: Option<u64>,
     pub unquantifiable_gaps: Option<u64>,
+    pub suppressed_replica_duplicates: Option<u64>,
 }
 
 /// Per-stage event accounting, derived from independent counters:
@@ -206,18 +211,38 @@ pub struct EventLedger {
     pub journaled_records: Option<u64>,
     /// Frames the mock dropped before the wire (injected fixture).
     pub injected_pre_wire_drops: u64,
+    /// Deltas applied to a non-active replica and deliberately suppressed.
+    /// `None` when the dedup counter could not be scraped. This is a
+    /// transport duplicate, not a duplicate application.
+    pub suppressed_replica_duplicates: Option<u64>,
     /// `generated - applied`, derived; `None` when applied is unobservable.
+    /// This coarse residual also absorbs injected pre-wire drops.
     pub unexplained_drops: Option<u64>,
+    /// `expected_applied - applied`: the downward half of the application
+    /// balance. `Some(0)` is the only acceptable value.
+    pub application_shortfall: Option<u64>,
+    /// `applied - expected_applied`: the upward half. A positive value means
+    /// one logical event was applied more than once.
+    pub over_applied: Option<u64>,
     /// `applied - sbe_deltas`, derived; `None` when either side is missing.
     pub persistence_gap: Option<u64>,
+    /// `sbe_deltas - applied`: persistence cannot contain more records than
+    /// were applied. `Some(0)` is the only acceptable value.
+    pub persistence_excess: Option<u64>,
 }
 
 impl EventLedger {
     /// A ledger reconciles only when every stage is observed and every
-    /// derived gap is exactly zero.
+    /// two-sided derived gap is exactly zero. Saturating arithmetic is never
+    /// used here to hide a negative difference: each direction is its own
+    /// field, so over-application cannot pass as a clean run.
     #[must_use]
     pub fn reconciled(&self) -> bool {
-        self.unexplained_drops == Some(0) && self.persistence_gap == Some(0)
+        self.unexplained_drops == Some(0)
+            && self.application_shortfall == Some(0)
+            && self.over_applied == Some(0)
+            && self.persistence_gap == Some(0)
+            && self.persistence_excess == Some(0)
     }
 }
 
@@ -561,8 +586,8 @@ fn apply_failure_injection(mock: &MockKalshi, config: &CellConfig, tickers: &[St
             mock.state().set_outbound_capacity(capacity);
             mock.state().stall_forwarder();
         }
-        Some(FailInject::ShutdownBeforeDrain) => {}
-        None => {}
+        Some(FailInject::OverApplication { .. }) | Some(FailInject::ShutdownBeforeDrain) | None => {
+        }
     }
 }
 
@@ -585,10 +610,18 @@ fn publish_delta_event(mock: &MockKalshi, ticker: &str, rng: &mut SplitMix64) {
 ///   deltas on publishable markets;
 /// - `MissingSnapshot`: all deltas avoid the skip target;
 /// - `DroppedFrames { count }`: the first `count` frames are dropped before
-///   the wire in replica-pair order, so `count / replicas` events vanish.
+///   the wire in replica-pair order, so `count / replicas` events vanish;
+/// - `OverApplication { duplicates }`: `duplicates` extra delta frames are
+///   published for already-generated logical events, so `expected_applied`
+///   stays correct while a dedup regression applies more than expected.
 struct PublishPlan {
     generated: usize,
+    /// The count a dedup-correct collector must apply. This is the ledger
+    /// baseline, not the number of wire frames.
     expected_applied: u64,
+    /// The count the drain barrier waits for. It exceeds `expected_applied`
+    /// only for a fixture that deliberately publishes extra frames.
+    drain_target: u64,
 }
 
 fn publish_events(
@@ -624,6 +657,18 @@ fn publish_events(
         publish_delta_event(mock, publishable[index], rng);
         generated += 1;
     }
+    // Over-application fixture: publish the same logical events again without
+    // increasing `generated`. The expected ledger stays correct; a collector
+    // that applies both copies exceeds it and must fail two-sided accounting.
+    if let Some(FailInject::OverApplication { duplicates }) = config.fail_inject {
+        for _ in 0..duplicates {
+            if publishable.is_empty() {
+                break;
+            }
+            let index = rng.below_usize(publishable.len());
+            publish_delta_event(mock, publishable[index], rng);
+        }
+    }
     let injected_frames = match config.fail_inject {
         Some(FailInject::DroppedFrames { count }) => count as u64,
         _ => 0,
@@ -636,9 +681,18 @@ fn publish_events(
     let expected_applied = (generated as u64)
         .saturating_sub(injected_frames / replicas)
         .saturating_sub(unanchored_update);
+    let extra_wire_frames = match config.fail_inject {
+        Some(FailInject::OverApplication { duplicates }) => duplicates as u64,
+        _ => 0,
+    };
     PublishPlan {
         generated,
         expected_applied,
+        // The barrier waits for every frame the fixture actually put on the
+        // wire. For an over-application fixture this is deliberately greater
+        // than the correct ledger, so the run drains before the ledger is
+        // evaluated and the excess is measured rather than raced.
+        drain_target: expected_applied.saturating_add(extra_wire_frames),
     }
 }
 
@@ -1031,7 +1085,7 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
                 match evaluate_barrier(
                     &sample,
                     &base,
-                    plan.expected_applied as f64,
+                    plan.drain_target as f64,
                     mock.state().in_flight(),
                 ) {
                     BarrierState::Satisfied => {
@@ -1092,6 +1146,9 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
         unquantifiable_gaps: final_sample
             .as_ref()
             .and_then(|sample| sample.count("collector_unquantifiable_gaps_total")),
+        suppressed_replica_duplicates: final_sample
+            .as_ref()
+            .and_then(|sample| sample.count("collector_suppressed_replica_duplicates_total")),
     };
 
     done.notify_one();
@@ -1223,10 +1280,18 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
         sbe_deltas: sbe_deltas_observed,
         journaled_records,
         injected_pre_wire_drops: transmit.injected_pre_wire_drops,
+        suppressed_replica_duplicates: incidents.suppressed_replica_duplicates,
         unexplained_drops: applied_events
             .map(|applied| (plan.generated as u64).saturating_sub(applied)),
+        application_shortfall: applied_events
+            .map(|applied| plan.expected_applied.saturating_sub(applied)),
+        over_applied: applied_events.map(|applied| applied.saturating_sub(plan.expected_applied)),
         persistence_gap: match (applied_events, sbe_deltas_observed) {
             (Some(applied), Some(sbe)) => Some(applied.saturating_sub(sbe)),
+            _ => None,
+        },
+        persistence_excess: match (applied_events, sbe_deltas_observed) {
+            (Some(applied), Some(sbe)) => Some(sbe.saturating_sub(applied)),
             _ => None,
         },
     };
@@ -1280,10 +1345,30 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
     if ledger.unexplained_drops.is_none() {
         reasons.push("event_accounting_unavailable".to_owned());
     }
+    if let Some(shortfall) = ledger.application_shortfall
+        && shortfall > 0
+    {
+        reasons.push("application_shortfall".to_owned());
+    }
+    if let Some(excess) = ledger.over_applied
+        && excess > 0
+    {
+        // Every logical event is published once, so an applied count above
+        // the expected ledger is a duplicate application. Both names are
+        // recorded: `over_application` states the accounting defect and
+        // `duplicate_application` states the mechanism the audit names.
+        reasons.push("over_application".to_owned());
+        reasons.push("duplicate_application".to_owned());
+    }
     if let Some(gap) = ledger.persistence_gap
         && gap > 0
     {
         reasons.push("persistence_gap".to_owned());
+    }
+    if let Some(excess) = ledger.persistence_excess
+        && excess > 0
+    {
+        reasons.push("persistence_excess".to_owned());
     }
     if transmit.queue_saturated > 0 {
         reasons.push("mock_throughput_limited".to_owned());
@@ -1653,8 +1738,13 @@ pub fn build_cell_manifest(
             }),
         },
         "injected_pre_wire_drops": output.map(|o| o.ledger.injected_pre_wire_drops).unwrap_or(0),
+        "suppressed_replica_duplicates": output
+            .and_then(|o| o.ledger.suppressed_replica_duplicates),
         "unexplained_drops": output.and_then(|o| o.ledger.unexplained_drops),
+        "application_shortfall": output.and_then(|o| o.ledger.application_shortfall),
+        "over_applied": output.and_then(|o| o.ledger.over_applied),
         "persistence_gap": output.and_then(|o| o.ledger.persistence_gap),
+        "persistence_excess": output.and_then(|o| o.ledger.persistence_excess),
         "reconciled": output.map(|o| o.ledger.reconciled()).unwrap_or(false),
     }));
 

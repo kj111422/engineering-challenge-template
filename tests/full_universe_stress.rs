@@ -837,3 +837,109 @@ fn unreadable_index_fails_closed() {
     assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
 }
+
+/// Two-sided accounting: a collector that applies more than the expected
+/// ledger must fail with an over-application class. The fixture publishes
+/// duplicate wire frames for already-generated logical events; a dedup-correct
+/// collector would still apply one copy, so `applied > expected` is exactly
+/// the duplicate-application defect the audit describes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn over_application_fixture_fails_closed() {
+    let directory = tempfile::tempdir().unwrap();
+    let duplicates = 7usize;
+    let config = CellConfig {
+        fail_inject: Some(FailInject::OverApplication { duplicates }),
+        events: 60,
+        limits: Some((20, 3)),
+        ..headless_cell_config(16, 200)
+    };
+    let outcome = stress_support::runner::run_cell(directory.path(), &config, None).await;
+    assert!(
+        !outcome.acceptance.valid,
+        "over-application must fail acceptance: reasons={:?}",
+        outcome.acceptance.reasons
+    );
+    assert!(
+        outcome
+            .acceptance
+            .reasons
+            .iter()
+            .any(|reason| reason == "over_application"),
+        "expected over_application, got {:?}",
+        outcome.acceptance.reasons
+    );
+    assert!(
+        outcome
+            .acceptance
+            .reasons
+            .iter()
+            .any(|reason| reason == "duplicate_application"),
+        "expected duplicate_application, got {:?}",
+        outcome.acceptance.reasons
+    );
+
+    let output = outcome.output.expect("fixture cell must produce output");
+    assert_eq!(
+        output.ledger.over_applied,
+        Some(duplicates as u64),
+        "every duplicate frame must be counted as over-application: {:?}",
+        output.ledger
+    );
+    assert_eq!(
+        output.ledger.application_shortfall,
+        Some(0),
+        "the correct ledger was fully applied: {:?}",
+        output.ledger
+    );
+    assert!(
+        !output.ledger.reconciled(),
+        "an over-applied ledger must not reconcile"
+    );
+    assert!(
+        output
+            .ledger
+            .suppressed_replica_duplicates
+            .is_some_and(|count| count > 0),
+        "the shadow replica must count suppressed transport duplicates: {:?}",
+        output.ledger
+    );
+}
+
+/// The ledger arithmetic is two-sided: a clean ledger reconciles, and each
+/// direction of every gap fails independently.
+#[test]
+fn ledger_reconciliation_is_two_sided() {
+    fn ledger(applied: u64, sbe: u64) -> stress_support::runner::EventLedger {
+        stress_support::runner::EventLedger {
+            generated_events: 100,
+            expected_applied: 100,
+            applied_events: Some(applied),
+            sbe_deltas: Some(sbe),
+            suppressed_replica_duplicates: Some(applied),
+            unexplained_drops: Some(100u64.saturating_sub(applied)),
+            application_shortfall: Some(100u64.saturating_sub(applied)),
+            over_applied: Some(applied.saturating_sub(100)),
+            persistence_gap: Some(applied.saturating_sub(sbe)),
+            persistence_excess: Some(sbe.saturating_sub(applied)),
+            ..Default::default()
+        }
+    }
+
+    assert!(ledger(100, 100).reconciled(), "exact accounting reconciles");
+    assert!(
+        !ledger(90, 90).reconciled(),
+        "a shortfall must not reconcile"
+    );
+    assert!(
+        !ledger(110, 110).reconciled(),
+        "over-application must not reconcile"
+    );
+    assert!(
+        !ledger(100, 101).reconciled(),
+        "persistence excess must not reconcile"
+    );
+    assert!(
+        !ledger(101, 100).reconciled(),
+        "persistence gap must not reconcile"
+    );
+}
