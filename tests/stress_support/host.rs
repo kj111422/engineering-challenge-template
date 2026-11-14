@@ -4,7 +4,10 @@
 //! (serialized as `null` with the reason recorded by the manifest writer),
 //! never silently replaced by `0`.
 
-use std::process::Command;
+use std::{
+    process::Command,
+    time::{Duration, Instant},
+};
 
 #[derive(Debug, Clone, Default)]
 pub struct HostInfo {
@@ -19,6 +22,7 @@ pub struct HostInfo {
     pub rustc_version: Option<String>,
     pub clock_source: Option<String>,
     pub clock_resolution_ns: Option<u64>,
+    pub clock_resolution_reason: Option<String>,
 }
 
 impl HostInfo {
@@ -48,6 +52,7 @@ impl HostInfo {
             .is_none()
             .then(|| "df not parseable on this host".to_owned());
         let rustc_version = command("rustc", &["--version"]);
+        let (clock_resolution_ns, clock_resolution_reason) = measure_clock_resolution();
         Self {
             os,
             kernel,
@@ -59,7 +64,8 @@ impl HostInfo {
             disk_free_reason,
             rustc_version,
             clock_source: Some(clock_source()),
-            clock_resolution_ns: Some(clock_resolution_ns()),
+            clock_resolution_ns,
+            clock_resolution_reason,
         }
     }
 }
@@ -109,16 +115,43 @@ fn parse_df_available(output: &str) -> Option<u64> {
 }
 
 fn clock_source() -> String {
-    #[cfg(target_os = "macos")]
-    {
-        "mach_absolute_time".to_owned()
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        "clock_gettime(CLOCK_MONOTONIC)".to_owned()
-    }
+    "std::time::Instant (monotonic)".to_owned()
 }
 
-fn clock_resolution_ns() -> u64 {
-    1
+/// Empirically measure the smallest observable non-zero step of
+/// `Instant::now()` within a bounded measurement budget. The reported value
+/// is an upper bound on the clock step; if the clock never advances inside
+/// the window the measurement is `None` with a reason — never a fabricated 1.
+fn measure_clock_resolution() -> (Option<u64>, Option<String>) {
+    const BUDGET: Duration = Duration::from_millis(50);
+    const MAX_ITERATIONS: u32 = 4_000_000;
+    let mut smallest: Option<Duration> = None;
+    let mut previous = Instant::now();
+    let deadline = previous + BUDGET;
+    let mut iterations = 0u32;
+    while iterations < MAX_ITERATIONS {
+        let now = Instant::now();
+        if now >= deadline {
+            break;
+        }
+        let delta = now.duration_since(previous);
+        previous = now;
+        if delta > Duration::ZERO {
+            smallest = Some(match smallest {
+                Some(current) if current <= delta => current,
+                _ => delta,
+            });
+        }
+        iterations += 1;
+    }
+    match smallest {
+        Some(resolution) => (
+            Some(u64::try_from(resolution.as_nanos()).unwrap_or(u64::MAX)),
+            None,
+        ),
+        None => (
+            None,
+            Some("clock did not advance during the measurement window".to_owned()),
+        ),
+    }
 }

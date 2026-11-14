@@ -114,10 +114,21 @@ pub struct WriterCounters {
     pub flushes: AtomicU64,
     pub errors: AtomicU64,
     pub queue_depth: AtomicU64,
+    /// Highest `queue_depth` observed when a message was accepted. Proves
+    /// whether the configured writer queue bound was actually reached. The
+    /// channel enforces the bound; this counter may transiently read one
+    /// above it (the writer frees the slot before its decrement lands).
+    pub queue_high_water: AtomicU64,
     pub segments: AtomicU64,
 }
 
 impl WriterCounters {
+    /// Record one accepted message and update the high-water mark.
+    pub fn note_enqueued(&self) {
+        let depth = self.queue_depth.fetch_add(1, Ordering::Relaxed) + 1;
+        self.queue_high_water.fetch_max(depth, Ordering::Relaxed);
+    }
+
     #[must_use]
     pub fn snapshot(&self) -> WriterStats {
         WriterStats {
@@ -126,6 +137,7 @@ impl WriterCounters {
             flushes: self.flushes.load(Ordering::Relaxed),
             errors: self.errors.load(Ordering::Relaxed),
             queue_depth: self.queue_depth.load(Ordering::Relaxed),
+            queue_high_water: self.queue_high_water.load(Ordering::Relaxed),
             segments: self.segments.load(Ordering::Relaxed),
         }
     }
@@ -138,6 +150,15 @@ pub struct WriterStats {
     pub flushes: u64,
     pub errors: u64,
     pub queue_depth: u64,
+    /// Highest observed queue depth. Absent in reports written before this
+    /// counter was added; defaults to zero instead of failing to parse.
+    ///
+    /// The channel enforces the configured bound; this counter observes it
+    /// with a one-slot lag: the writer frees a channel slot when it dequeues
+    /// a message, but its decrement can land after a sender already counted
+    /// the freed slot, so a saturated queue may transiently read bound + 1.
+    #[serde(default)]
+    pub queue_high_water: u64,
     pub segments: u64,
 }
 
@@ -749,6 +770,11 @@ impl MetricsRegistry {
             "collector_writer_queue_depth",
             "Messages waiting for the writer",
             snapshot.writer.queue_depth
+        );
+        gauge!(
+            "collector_writer_queue_high_water",
+            "Highest observed writer queue depth",
+            snapshot.writer.queue_high_water
         );
         gauge!(
             "collector_sources_connected",

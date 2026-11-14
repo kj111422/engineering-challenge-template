@@ -11,8 +11,12 @@
 //! - `market_lifecycle_v2` subscribe and notifications;
 //! - per-connection sid/seq, connection drop for fault scenarios.
 //!
-//! The mock tracks every transmitted frame in a broadcast ledger so the
-//! harness can reconcile generated vs delivered vs applied events.
+//! The mock keeps *counter-based* transmit accounting (no per-frame records,
+//! so memory stays flat at 150k symbols): frames enqueued, frames whose
+//! `sink.send()` completed (socket-written), frames still in flight, queue
+//! high-water, and explicit saturation/injected-drop counters. The harness
+//! reconciles generated vs written vs applied events from these counters
+//! alone.
 //!
 //! This module is the largest piece of the laboratory. It is deliberately
 //! built first and exercised by its own tests before the stress suite uses it.
@@ -24,6 +28,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicU64, AtomicUsize, Ordering},
     },
+    time::Duration,
 };
 
 use futures_util::{SinkExt, StreamExt};
@@ -41,6 +46,10 @@ use engineering_challenge::Side;
 use super::rng::SplitMix64;
 use super::universe::SyntheticUniverse;
 
+/// Default bounded outbound queue depth per websocket connection. A full
+/// queue is recorded as saturation; nothing is dropped without a counter.
+pub const DEFAULT_OUTBOUND_CAPACITY: usize = 4096;
+
 /// Kind of frame transmitted by the mock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum FrameKind {
@@ -51,16 +60,27 @@ pub enum FrameKind {
     OkAck,
 }
 
-/// One transmitted frame, recorded for the event ledger.
-#[allow(dead_code)] // fields are read by the reconciliation checks landing with the workload phases
-#[derive(Debug, Clone)]
-pub struct TransmittedFrame {
-    pub connection: usize,
-    pub market: Option<String>,
-    pub kind: FrameKind,
-    /// Monotonic per-connection sequence emission was skipped: tracked at the
-    /// connection level by the mock itself.
-    pub seq: u64,
+/// Transmit-side ledger snapshot consumed by the cell runner. All values are
+/// counter reads; the mock never retains one record per frame.
+#[derive(Debug, Clone, Default)]
+pub struct MockLedger {
+    /// Frames accepted into a connection's bounded outbound queue.
+    pub enqueued: u64,
+    /// Frames whose websocket `sink.send()` completed (socket-written).
+    pub sent: u64,
+    /// Enqueued frames whose send has not completed yet.
+    pub in_flight: u64,
+    pub snapshots_sent: u64,
+    pub deltas_sent: u64,
+    pub acks_sent: u64,
+    /// Frames the harness deliberately dropped before the wire (injection).
+    pub injected_pre_wire_drops: u64,
+    /// Frames that found a connection's outbound queue at capacity. Each one
+    /// is a real drop; the harness must never classify such a run as clean.
+    pub queue_saturated: u64,
+    pub queue_high_water: u64,
+    /// Configured bound of the per-connection outbound queue.
+    pub outbound_capacity: u64,
 }
 
 struct MockBook {
@@ -79,7 +99,9 @@ impl MockBook {
 }
 
 struct Connection {
-    outbound: tokio::sync::mpsc::UnboundedSender<Message>,
+    outbound: tokio::sync::mpsc::Sender<Message>,
+    /// Configured bound of `outbound`, kept for queue-depth observation.
+    outbound_capacity: usize,
     /// Snapshot bid/ask price and quantity levels as strings.
     subscriptions: HashSet<String>,
     sid_orderbook: Option<i64>,
@@ -96,9 +118,30 @@ pub struct MockState {
     book_subscribed_count: AtomicUsize,
     lifecycle_subscribed_count: AtomicUsize,
     connections: Mutex<HashMap<usize, Connection>>,
-    transmitted: Mutex<Vec<TransmittedFrame>>,
-    transmitted_count: AtomicU64,
+    fail_skip_snapshots: Mutex<HashSet<u32>>,
+    drop_delta_count: AtomicU64,
+    stall_forwarder: std::sync::atomic::AtomicBool,
+    ticker_index: HashMap<String, u32>,
+    /// Frames accepted into a bounded outbound queue.
+    enqueued_count: AtomicU64,
+    /// Frames awaiting completion of `sink.send()`. Drained when the
+    /// forwarding task finishes each send.
+    in_flight: AtomicU64,
+    /// Frames whose `sink.send()` completed successfully.
+    sent_count: AtomicU64,
+    sent_snapshots: AtomicU64,
+    sent_deltas: AtomicU64,
+    sent_lifecycle: AtomicU64,
+    sent_acks: AtomicU64,
     transmitted_bytes: AtomicU64,
+    /// Frames deliberately dropped by injection before the wire.
+    injected_drops: AtomicU64,
+    /// Maximum observed pending-send queue depth across all connections.
+    queue_high_water: AtomicU64,
+    /// Sends that found the outbound queue at capacity (each is a drop).
+    queue_saturated: AtomicU64,
+    /// Per-connection outbound queue bound; the saturation fixture lowers it.
+    outbound_capacity: AtomicUsize,
     lifecycle_tx: broadcast::Sender<LifecycleMsg>,
     close: Mutex<HashMap<usize, oneshot::Sender<()>>>,
     start_send_ts_ms: i64,
@@ -117,6 +160,11 @@ impl MockState {
             .iter()
             .map(|market| (market.ticker.clone(), MockBook::new()))
             .collect();
+        let ticker_index = universe
+            .markets
+            .iter()
+            .map(|market| (market.ticker.clone(), market.index as u32))
+            .collect();
         let (lifecycle_tx, _) = broadcast::channel(1024);
         Self {
             universe,
@@ -127,9 +175,22 @@ impl MockState {
             book_subscribed_count: AtomicUsize::new(0),
             lifecycle_subscribed_count: AtomicUsize::new(0),
             connections: Mutex::new(HashMap::new()),
-            transmitted: Mutex::new(Vec::new()),
-            transmitted_count: AtomicU64::new(0),
+            fail_skip_snapshots: Mutex::new(HashSet::new()),
+            drop_delta_count: AtomicU64::new(0),
+            stall_forwarder: std::sync::atomic::AtomicBool::new(false),
+            ticker_index,
+            enqueued_count: AtomicU64::new(0),
+            in_flight: AtomicU64::new(0),
+            sent_count: AtomicU64::new(0),
+            sent_snapshots: AtomicU64::new(0),
+            sent_deltas: AtomicU64::new(0),
+            sent_lifecycle: AtomicU64::new(0),
+            sent_acks: AtomicU64::new(0),
             transmitted_bytes: AtomicU64::new(0),
+            injected_drops: AtomicU64::new(0),
+            queue_high_water: AtomicU64::new(0),
+            queue_saturated: AtomicU64::new(0),
+            outbound_capacity: AtomicUsize::new(DEFAULT_OUTBOUND_CAPACITY),
             lifecycle_tx,
             close: Mutex::new(HashMap::new()),
             start_send_ts_ms: 1_800_000_000_000,
@@ -163,40 +224,61 @@ impl MockState {
         self.lifecycle_subscribed_count.load(Ordering::SeqCst)
     }
 
-    pub fn transmitted_count(&self) -> u64 {
-        self.transmitted_count.load(Ordering::SeqCst)
+    /// Skip the snapshot for the given market indices on subscription (the
+    /// harness self-test knob for missing-anchor fixtures).
+    pub fn set_skip_snapshots(&self, indices: impl IntoIterator<Item = u32>) {
+        if let Ok(mut set) = self.fail_skip_snapshots.lock() {
+            *set = indices.into_iter().collect();
+        }
     }
 
-    #[allow(dead_code)] // used by recovery/backpressure phases of the matrix
-    pub fn transmitted_bytes(&self) -> u64 {
-        self.transmitted_bytes.load(Ordering::SeqCst)
+    /// Drop the first `count` delta frames before the wire (no sequence
+    /// number is consumed, so the loss is invisible to the protocol and can
+    /// only be caught by event accounting). Used by the dropped-frame fixture.
+    pub fn set_drop_delta_count(&self, count: u64) {
+        self.drop_delta_count.store(count, Ordering::SeqCst);
     }
 
-    /// Transmitted frames matching `kind`, in emission order.
-    #[allow(dead_code)]
-    pub fn transmitted(&self, kind: FrameKind) -> Vec<TransmittedFrame> {
-        self.transmitted
-            .lock()
-            .map(|all| {
-                all.iter()
-                    .filter(|frame| frame.kind == kind)
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default()
+    /// Stall the send forwarder indefinitely (the collector never sees the
+    /// queued frames). Used by the drain-incomplete fixture.
+    pub fn stall_forwarder(&self) {
+        self.stall_forwarder.store(true, Ordering::SeqCst);
     }
 
-    /// Frames transmitted for one market, across connections.
-    #[allow(dead_code)]
-    pub fn transmitted_for(&self, market: &str, kind: FrameKind) -> usize {
-        self.transmitted
-            .lock()
-            .map(|all| {
-                all.iter()
-                    .filter(|frame| frame.kind == kind && frame.market.as_deref() == Some(market))
-                    .count()
-            })
-            .unwrap_or(0)
+    /// Lower the per-connection outbound bound (applies to connections
+    /// created after this call). Used by the saturation fixture.
+    pub fn set_outbound_capacity(&self, capacity: usize) {
+        self.outbound_capacity
+            .store(capacity.max(1), Ordering::SeqCst);
+    }
+
+    /// Universe index for one market ticker, if it exists.
+    #[must_use]
+    pub fn market_index(&self, ticker: &str) -> Option<u32> {
+        self.ticker_index.get(ticker).copied()
+    }
+
+    /// Counter snapshot of the transmit-side ledger for the cell.
+    #[must_use]
+    pub fn ledger_snapshot(&self) -> MockLedger {
+        MockLedger {
+            enqueued: self.enqueued_count.load(Ordering::SeqCst),
+            sent: self.sent_count.load(Ordering::SeqCst),
+            in_flight: self.in_flight.load(Ordering::SeqCst),
+            snapshots_sent: self.sent_snapshots.load(Ordering::SeqCst),
+            deltas_sent: self.sent_deltas.load(Ordering::SeqCst),
+            acks_sent: self.sent_acks.load(Ordering::SeqCst),
+            injected_pre_wire_drops: self.injected_drops.load(Ordering::SeqCst),
+            queue_saturated: self.queue_saturated.load(Ordering::SeqCst),
+            queue_high_water: self.queue_high_water.load(Ordering::SeqCst),
+            outbound_capacity: self.outbound_capacity.load(Ordering::SeqCst) as u64,
+        }
+    }
+
+    /// Frames accepted into an outbound queue but not yet written to a socket.
+    #[must_use]
+    pub fn in_flight(&self) -> u64 {
+        self.in_flight.load(Ordering::SeqCst)
     }
 
     /// Seed the synthetic book for one market with deterministic levels.
@@ -215,45 +297,47 @@ impl MockState {
         }
     }
 
-    fn record_frame(
-        &self,
-        connection: usize,
-        market: Option<String>,
-        kind: FrameKind,
-        seq: u64,
-        bytes: usize,
-    ) {
-        self.transmitted_count.fetch_add(1, Ordering::SeqCst);
+    /// Called by the forwarding task when one `sink.send()` completes.
+    fn complete_send(&self, bytes: usize, kind: FrameKind) {
+        self.in_flight.fetch_sub(1, Ordering::SeqCst);
+        self.sent_count.fetch_add(1, Ordering::SeqCst);
         self.transmitted_bytes
             .fetch_add(bytes as u64, Ordering::SeqCst);
-        if let Ok(mut log) = self.transmitted.lock() {
-            log.push(TransmittedFrame {
-                connection,
-                market,
-                kind,
-                seq,
-            });
+        match kind {
+            FrameKind::OrderbookSnapshot => &self.sent_snapshots,
+            FrameKind::OrderbookDelta => &self.sent_deltas,
+            FrameKind::Lifecycle => &self.sent_lifecycle,
+            FrameKind::SubscribeAck | FrameKind::OkAck => &self.sent_acks,
         }
+        .fetch_add(1, Ordering::SeqCst);
     }
 
     fn send_json(&self, connection: usize, value: Value) {
         let text = value.to_string();
-        let bytes = text.len();
-        let kind = match value["type"].as_str() {
-            Some("orderbook_snapshot") => FrameKind::OrderbookSnapshot,
-            Some("orderbook_delta") => FrameKind::OrderbookDelta,
-            Some("market_lifecycle_v2") => FrameKind::Lifecycle,
-            Some("subscribed") => FrameKind::SubscribeAck,
-            Some("ok") => FrameKind::OkAck,
-            _ => FrameKind::OkAck,
+        let Ok(mut connections) = self.connections.lock() else {
+            return;
         };
-        let market = value["msg"]["market_ticker"].as_str().map(str::to_owned);
-        let seq = value["seq"].as_u64().unwrap_or(0);
-        if let Ok(mut connections) = self.connections.lock()
-            && let Some(entry) = connections.get_mut(&connection)
-            && entry.outbound.send(Message::Text(text.into())).is_ok()
-        {
-            self.record_frame(connection, market, kind, seq, bytes);
+        let Some(entry) = connections.get_mut(&connection) else {
+            return;
+        };
+        // Bounded outbound queue. Depth and saturation are observed around
+        // the non-blocking send; a full queue is an accounted drop, never a
+        // silent one.
+        let queued_before = entry
+            .outbound_capacity
+            .saturating_sub(entry.outbound.capacity());
+        match entry.outbound.try_send(Message::Text(text.into())) {
+            Ok(()) => {
+                self.enqueued_count.fetch_add(1, Ordering::SeqCst);
+                self.in_flight.fetch_add(1, Ordering::SeqCst);
+                let queued_after = queued_before.saturating_add(1);
+                self.queue_high_water
+                    .fetch_max(queued_after as u64, Ordering::SeqCst);
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                self.queue_saturated.fetch_add(1, Ordering::SeqCst);
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {}
         }
     }
 
@@ -290,7 +374,7 @@ impl MockState {
 
     fn next_ts(&self) -> i64 {
         // Deterministic but monotonic: offset from a fixed base by frames sent.
-        self.start_send_ts_ms + self.transmitted_count.load(Ordering::SeqCst) as i64
+        self.start_send_ts_ms + self.sent_count.load(Ordering::SeqCst) as i64
     }
 
     /// Publish one seeded price-level change for `market` to every connection
@@ -325,6 +409,15 @@ impl MockState {
             Err(_) => Vec::new(),
         };
         for connection in connections {
+            // Injected pre-wire drop (harness fixture): the frame never
+            // exists and consumes no sequence number, so the loss is
+            // protocol-invisible and only event accounting can catch it.
+            let remaining = self.drop_delta_count.load(Ordering::SeqCst);
+            if remaining > 0 {
+                self.drop_delta_count.fetch_sub(1, Ordering::SeqCst);
+                self.injected_drops.fetch_add(1, Ordering::SeqCst);
+                continue;
+            }
             let sid = match self.connections.lock() {
                 Ok(connections) => connections
                     .get(&connection)
@@ -369,7 +462,7 @@ impl MockState {
     /// shared timestamp (both replicas see the same venue event).
     #[allow(dead_code)] // used by the lifecycle-churn scenario cells
     pub fn publish_lifecycle(&self, event_type: &str, market: &str, extra: Value) {
-        let ts = 1_700_000_000_000 + self.transmitted_count.load(Ordering::SeqCst) as i64;
+        let ts = 1_700_000_000_000 + self.sent_count.load(Ordering::SeqCst) as i64;
         let mut msg = json!({
             "market_ticker": market,
             "event_type": event_type,
@@ -570,12 +663,14 @@ async fn handle_ws_connection(id: usize, socket: TcpStream, state: Arc<MockState
         return;
     };
     let (mut sink, mut stream) = websocket.split();
-    let (outbound, mut inbound) = tokio::sync::mpsc::unbounded_channel::<Message>();
+    let capacity = state.outbound_capacity.load(Ordering::SeqCst).max(1);
+    let (outbound, mut inbound) = tokio::sync::mpsc::channel::<Message>(capacity);
     let (close_tx, mut close_rx) = oneshot::channel();
     state.connections.lock().unwrap().insert(
         id,
         Connection {
             outbound,
+            outbound_capacity: capacity,
             subscriptions: HashSet::new(),
             sid_orderbook: None,
             seq: 0,
@@ -583,12 +678,36 @@ async fn handle_ws_connection(id: usize, socket: TcpStream, state: Arc<MockState
     );
     state.close.lock().unwrap().insert(id, close_tx);
 
-    // Forwarder: messages from the outbound channel to the websocket.
+    // Forwarder: messages from the outbound channel to the websocket. A
+    // frame counts as sent only after `sink.send()` returns Ok.
     let forward_state = Arc::clone(&state);
     let _forward = tokio::spawn(async move {
-        while let Some(message) = inbound.recv().await {
-            if sink.send(message).await.is_err() {
+        loop {
+            if forward_state.stall_forwarder.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                continue;
+            }
+            let Some(message) = inbound.recv().await else {
                 break;
+            };
+            match &message {
+                Message::Text(text) => {
+                    let value: Value = serde_json::from_str(text).unwrap_or(Value::Null);
+                    let kind = match value["type"].as_str() {
+                        Some("orderbook_snapshot") => FrameKind::OrderbookSnapshot,
+                        Some("orderbook_delta") => FrameKind::OrderbookDelta,
+                        Some("market_lifecycle_v2") => FrameKind::Lifecycle,
+                        Some("subscribed") => FrameKind::SubscribeAck,
+                        _ => FrameKind::OkAck,
+                    };
+                    let bytes = text.len();
+                    if sink.send(message).await.is_ok() {
+                        forward_state.complete_send(bytes, kind);
+                    }
+                }
+                _ => {
+                    let _ = sink.send(message).await;
+                }
             }
         }
         drop(forward_state);
@@ -640,7 +759,20 @@ async fn handle_ws_connection(id: usize, socket: TcpStream, state: Arc<MockState
                                 state.book_subscribed_count.fetch_add(tickers.len(), Ordering::SeqCst);
                                 send_subscribe_ack(&state, id, id_num, "orderbook_delta", sid);
                                 // Initial snapshot per requested ticker.
+                                let skipped = state
+                                    .fail_skip_snapshots
+                                    .lock()
+                                    .map(|set| set.clone())
+                                    .unwrap_or_default();
                                 for ticker in &tickers {
+                                    let index = state
+                                        .ticker_index
+                                        .get(ticker)
+                                        .copied()
+                                        .unwrap_or(u32::MAX);
+                                    if skipped.contains(&index) {
+                                        continue;
+                                    }
                                     let seq = next_seq(&state, id);
                                     state.send_json(id, state.snapshot_body(ticker, sid, seq));
                                 }
