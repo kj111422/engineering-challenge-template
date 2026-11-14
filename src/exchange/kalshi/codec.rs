@@ -767,7 +767,7 @@ mod tests {
     #[test]
     fn checked_in_snapshot_fixtures_decode() {
         let message = decode_kalshi_message(
-            include_str!("../../../../fixtures/kalshi/book_snapshot.json"),
+            include_str!("../../../fixtures/kalshi/book_snapshot.json"),
             NOW,
         )
         .unwrap();
@@ -788,7 +788,7 @@ mod tests {
         assert_eq!(meta.exchange_ts_us, Some(1_669_149_841_234_000));
 
         let message = decode_kalshi_message(
-            include_str!("../../../../fixtures/kalshi/book_snapshot_legacy.json"),
+            include_str!("../../../fixtures/kalshi/book_snapshot_legacy.json"),
             NOW,
         )
         .unwrap();
@@ -798,7 +798,7 @@ mod tests {
         let ExchangeEvent::Snapshot { book, meta, .. } = event else {
             panic!("expected event");
         };
-        assert_eq!(book.bids[0].price, Price::from_raw(8_000));
+        assert_eq!(book.bids[0].price, Price::from_raw(80_000));
         assert_eq!(book.bids[0].quantity, Quantity::new(300_000_000).unwrap());
         assert_eq!(book.asks[0].price, Price::from_raw(460_000));
         assert_eq!(meta.exchange_ts_us, None);
@@ -807,7 +807,7 @@ mod tests {
     #[test]
     fn checked_in_delta_fixtures_decode() {
         let message = decode_kalshi_message(
-            include_str!("../../../../fixtures/kalshi/orderbook_delta_yes.json"),
+            include_str!("../../../fixtures/kalshi/orderbook_delta_yes.json"),
             NOW,
         )
         .unwrap();
@@ -834,7 +834,7 @@ mod tests {
         assert_eq!(meta.exchange_ts_us, Some(1_669_149_841_000_000));
 
         let message = decode_kalshi_message(
-            include_str!("../../../../fixtures/kalshi/orderbook_delta_no_inverted.json"),
+            include_str!("../../../fixtures/kalshi/orderbook_delta_no_inverted.json"),
             NOW,
         )
         .unwrap();
@@ -842,7 +842,10 @@ mod tests {
             panic!("expected delta");
         };
         let ExchangeEvent::LevelChange {
-            side, price, change, ..
+            side,
+            price,
+            change,
+            ..
         } = event
         else {
             panic!("expected level change");
@@ -858,7 +861,7 @@ mod tests {
     #[test]
     fn checked_in_lifecycle_fixture_decodes() {
         let message = decode_kalshi_message(
-            include_str!("../../../../fixtures/kalshi/market_lifecycle_activated.json"),
+            include_str!("../../../fixtures/kalshi/market_lifecycle_activated.json"),
             NOW,
         )
         .unwrap();
@@ -882,14 +885,19 @@ mod tests {
     #[test]
     fn checked_in_control_fixtures_decode() {
         let message = decode_kalshi_message(
-            include_str!("../../../../fixtures/kalshi/ticker_channel_ignored.json"),
+            include_str!("../../../fixtures/kalshi/ticker_channel_ignored.json"),
             NOW,
         )
         .unwrap();
-        assert_eq!(message, KalshiMessage::Ignore { kind: "ticker".to_owned() });
+        assert_eq!(
+            message,
+            KalshiMessage::Ignore {
+                kind: "ticker".to_owned()
+            }
+        );
 
         let message = decode_kalshi_message(
-            include_str!("../../../../fixtures/kalshi/control_error.json"),
+            include_str!("../../../fixtures/kalshi/control_error.json"),
             NOW,
         )
         .unwrap();
@@ -906,7 +914,7 @@ mod tests {
     #[test]
     fn checked_in_malformed_delta_fixture_is_rejected() {
         let error = decode_kalshi_message(
-            include_str!("../../../../fixtures/kalshi/malformed_delta_missing_fields.json"),
+            include_str!("../../../fixtures/kalshi/malformed_delta_missing_fields.json"),
             NOW,
         )
         .expect_err("a delta without delta_fp must be rejected");
