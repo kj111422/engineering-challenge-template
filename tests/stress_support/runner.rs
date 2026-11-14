@@ -87,7 +87,10 @@ pub struct CellConfig {
     /// Zipf-like skew: the first 10% of markets receive 80% of events.
     pub hot_pair: bool,
     /// Reserved for the workload-shape matrix (unused by the first cells).
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "read by the workload-shape cells, which this increment does not wire yet"
+    )]
     pub uniform_spread: bool,
     pub journal: bool,
     /// Overrides `ANCHOR_LIMIT`/`DRAIN_LIMIT` for fast failure tests.

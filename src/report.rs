@@ -163,7 +163,10 @@ pub struct RunReport {
 }
 
 impl RunReport {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the report is assembled from the run's independent stage counters"
+    )]
     #[must_use]
     pub fn new(
         mode: &str,

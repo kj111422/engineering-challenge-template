@@ -151,7 +151,10 @@ fn snapshot_event(native: &str, bid: i64, ask: i64, clock: i64) -> ExchangeEvent
     snapshot_event_at(native, bid, ask, clock, NOW)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "test helper mirrors the fields of the ExchangeEvent::LevelChange variant it constructs"
+)]
 fn delta_event_fenced(
     native: &str,
     side: Side,
