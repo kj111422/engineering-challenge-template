@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "source_commit": "756197558e38f307590b6bd44f81510cc0ba69f5",
+  "started_at_utc": "2026-11-14T19:00:00Z",
+  "completed_at_utc": "2026-11-14T19:27:26Z",
+  "evidence_tier": "LIVE_UNIVERSE_OK",
+  "scope": "universe",
+  "duration_seconds_per_venue": 3600,
+  "max_markets_per_venue": 0,
+  "shards": 0,
+  "replicas": 1,
+  "egress_policy": "direct (application default; no proxy configured by this script)",
+  "order_entry": "not used",
+  "venues": {
+    "polymarket": {
+      "status": "failed"
+    },
+    "kalshi": {
+      "status": "skipped_permission_not_confirmed"
+    }
+  }
+}
