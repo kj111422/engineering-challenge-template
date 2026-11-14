@@ -648,15 +648,26 @@ fn write_cell_manifest(outcome: CellOutcome, config: &CellConfig, out_dir: &Path
     let cell_id = if acceptance_valid {
         format!("seed-{:04x}-{}-uniform", config.seed, config.symbols)
     } else {
+        // The exact failure class stays in the manifest body; the filename
+        // only carries a filesystem-safe summary of it.
+        let class = outcome
+            .acceptance
+            .failure_class
+            .as_deref()
+            .unwrap_or("unknown");
+        let summary: String = class
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
         format!(
             "{status}-seed-{:04x}-{}-{}",
-            config.seed,
-            config.symbols,
-            outcome
-                .acceptance
-                .failure_class
-                .as_deref()
-                .unwrap_or("unknown")
+            config.seed, config.symbols, summary
         )
     };
     let manifest = build_cell_manifest(&outcome, config, &cell_id);
