@@ -819,7 +819,7 @@ impl WriterHandle {
                 anyhow::bail!("SBE writer queue full for {timeout:?}");
             }
         };
-        self.counters.queue_depth.fetch_add(1, Ordering::Relaxed);
+        self.counters.note_enqueued();
         permit.send(WriterCommand::Message(message));
         Ok(())
     }

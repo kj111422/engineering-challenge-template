@@ -1,0 +1,4 @@
+Error: planning collector capacity
+
+Caused by:
+    discovered 387392 symbols: keeping every socket at or below 5000 symbols needs 78 shards, above max_shards = 64; raise max_shards or the per-socket bound

@@ -1,0 +1,33 @@
+# Capacity envelope for full-universe live evidence runs
+# (LIVE_EVIDENCE_SCOPE=universe with scripts/run-live-evidence.sh).
+#
+# Measured on 2026-11-14: live Polymarket discovery returned 387,392 outcome
+# symbols. At the default 5,000 symbols per socket that needs
+# ceil(387392 / 5000) = 78 book shards, which the built-in defaults reject
+# (max_shards = 64, max_total_connections = 64). The planner refused before
+# opening a socket and preserved the reason; this file is the reviewed
+# envelope that makes the run feasible. It raises the hard startup gates
+# only — every other default, and every correctness gate, still applies.
+#
+# Resource projection at this envelope (see deploy/deployment-notes.md):
+# ~2.7 GB of order-book state plus runtime overhead, 78 concurrent
+# websocket connections, and several GB of capture for a one-hour run.
+# A host below 16 GB RAM will run under memory pressure; the runner's
+# correctness gates (drain barrier, coverage, completeness) fail closed
+# under that pressure rather than reporting a false success.
+
+exchange = "polymarket"
+
+[collector]
+# 0 derives the shard count from the discovered symbol count.
+shards = 0
+replicas = 1
+max_symbols_per_socket = 5000
+# ceil(387392 / 5000) = 78 shards, plus headroom for universe growth.
+max_shards = 96
+max_total_connections = 128
+# Full-universe order-book state plus overhead; see the projection above.
+max_estimated_book_memory_mb = 4096
+# The subscribe-time snapshot burst for 387k symbols exceeds the default
+# 16 MiB/s gate; 128 MiB/s keeps the initial anchoring phase feasible.
+max_snapshot_bytes_per_sec = 134217728

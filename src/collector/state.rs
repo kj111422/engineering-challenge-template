@@ -1137,6 +1137,14 @@ impl CollectorCore {
             self.stats.deltas_emitted = self.stats.deltas_emitted.saturating_add(1);
             vec![OutputMessage::PriceLevelUpdate(update)]
         } else {
+            if state.active.is_some() {
+                // The delta was applied to a non-active replica's private
+                // book and suppressed. Counting it keeps a transport
+                // duplicate distinct from a duplicate application: the
+                // active source still contributes exactly one emission.
+                self.stats.suppressed_replica_duplicates =
+                    self.stats.suppressed_replica_duplicates.saturating_add(1);
+            }
             Vec::new()
         }
     }

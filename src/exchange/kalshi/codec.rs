@@ -760,4 +760,167 @@ mod tests {
         assert_eq!(book.bids.len(), 1);
         assert_eq!(book.bids[0].price, Price::from_raw(400_000));
     }
+
+    /// The checked-in fixtures under `fixtures/kalshi/` are part of the wire
+    /// contract: they decode here, and the journal round-trips them
+    /// byte-for-byte (`src/journal/tests.rs`).
+    #[test]
+    fn checked_in_snapshot_fixtures_decode() {
+        let message = decode_kalshi_message(
+            include_str!("../../../fixtures/kalshi/book_snapshot.json"),
+            NOW,
+        )
+        .unwrap();
+        let KalshiMessage::Snapshot { sid, seq, event } = message else {
+            panic!("expected snapshot");
+        };
+        assert_eq!((sid, seq), (2, 2));
+        let ExchangeEvent::Snapshot { book, meta, .. } = event else {
+            panic!("expected event");
+        };
+        assert_eq!(book.bids[0].price, Price::from_raw(80_000));
+        assert_eq!(book.bids[0].quantity, Quantity::new(300_000_000).unwrap());
+        assert_eq!(book.bids[1].price, Price::from_raw(220_000));
+        assert_eq!(book.asks[0].price, Price::from_raw(460_000));
+        assert_eq!(book.asks[0].quantity, Quantity::new(20_000_000).unwrap());
+        assert_eq!(book.asks[1].price, Price::from_raw(440_000));
+        assert_eq!(meta.clock, Some(4_182_057));
+        assert_eq!(meta.exchange_ts_us, Some(1_669_149_841_234_000));
+
+        let message = decode_kalshi_message(
+            include_str!("../../../fixtures/kalshi/book_snapshot_legacy.json"),
+            NOW,
+        )
+        .unwrap();
+        let KalshiMessage::Snapshot { event, .. } = message else {
+            panic!("expected snapshot");
+        };
+        let ExchangeEvent::Snapshot { book, meta, .. } = event else {
+            panic!("expected event");
+        };
+        assert_eq!(book.bids[0].price, Price::from_raw(80_000));
+        assert_eq!(book.bids[0].quantity, Quantity::new(300_000_000).unwrap());
+        assert_eq!(book.asks[0].price, Price::from_raw(460_000));
+        assert_eq!(meta.exchange_ts_us, None);
+    }
+
+    #[test]
+    fn checked_in_delta_fixtures_decode() {
+        let message = decode_kalshi_message(
+            include_str!("../../../fixtures/kalshi/orderbook_delta_yes.json"),
+            NOW,
+        )
+        .unwrap();
+        let KalshiMessage::Delta { event, .. } = message else {
+            panic!("expected delta");
+        };
+        let ExchangeEvent::LevelChange {
+            side,
+            price,
+            change,
+            meta,
+            ..
+        } = event
+        else {
+            panic!("expected level change");
+        };
+        assert_eq!(side, Side::Buy);
+        assert_eq!(price, Price::from_raw(220_000));
+        assert_eq!(
+            change,
+            QuantityChange::Delta(QuantityDelta::from_raw(120_000_000))
+        );
+        // `msg.ts_ms` takes precedence over the envelope `sending_ts_ms`.
+        assert_eq!(meta.exchange_ts_us, Some(1_669_149_841_000_000));
+
+        let message = decode_kalshi_message(
+            include_str!("../../../fixtures/kalshi/orderbook_delta_no_inverted.json"),
+            NOW,
+        )
+        .unwrap();
+        let KalshiMessage::Delta { event, .. } = message else {
+            panic!("expected delta");
+        };
+        let ExchangeEvent::LevelChange {
+            side,
+            price,
+            change,
+            ..
+        } = event
+        else {
+            panic!("expected level change");
+        };
+        assert_eq!(side, Side::Sell);
+        assert_eq!(price, Price::from_raw(40_000));
+        assert_eq!(
+            change,
+            QuantityChange::Delta(QuantityDelta::from_raw(-54_000_000))
+        );
+    }
+
+    #[test]
+    fn checked_in_lifecycle_fixture_decodes() {
+        let message = decode_kalshi_message(
+            include_str!("../../../fixtures/kalshi/market_lifecycle_activated.json"),
+            NOW,
+        )
+        .unwrap();
+        let KalshiMessage::Lifecycle { event, .. } = message else {
+            panic!("expected lifecycle");
+        };
+        let ExchangeEvent::Lifecycle {
+            kind,
+            close_time_us,
+            title,
+            ..
+        } = event
+        else {
+            panic!("expected lifecycle event");
+        };
+        assert_eq!(kind, LifecycleKind::Activated);
+        assert_eq!(close_time_us, Some(1_703_368_800_000_000));
+        assert_eq!(title.as_deref(), Some("Will the Fed target 3.00%?"));
+    }
+
+    #[test]
+    fn checked_in_control_fixtures_decode() {
+        let message = decode_kalshi_message(
+            include_str!("../../../fixtures/kalshi/ticker_channel_ignored.json"),
+            NOW,
+        )
+        .unwrap();
+        assert_eq!(
+            message,
+            KalshiMessage::Ignore {
+                kind: "ticker".to_owned()
+            }
+        );
+
+        let message = decode_kalshi_message(
+            include_str!("../../../fixtures/kalshi/control_error.json"),
+            NOW,
+        )
+        .unwrap();
+        assert_eq!(
+            message,
+            KalshiMessage::Error {
+                id: Some(7),
+                code: Some(7),
+                message: "subscribed market not found".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn checked_in_malformed_delta_fixture_is_rejected() {
+        let error = decode_kalshi_message(
+            include_str!("../../../fixtures/kalshi/malformed_delta_missing_fields.json"),
+            NOW,
+        )
+        .expect_err("a delta without delta_fp must be rejected");
+        assert!(
+            error.to_string().contains("delta_fp"),
+            "unexpected error: {error}"
+        );
+    }
 }

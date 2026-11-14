@@ -1,0 +1,14 @@
+{
+  "type": "market_lifecycle_v2",
+  "sid": 13,
+  "seq": 3,
+  "sending_ts_ms": 1669149841234,
+  "msg": {
+    "market_ticker": "FED-23DEC-T3.00",
+    "event_type": "activated",
+    "close_ts": 1703368800,
+    "additional_metadata": {
+      "title": "Will the Fed target 3.00%?"
+    }
+  }
+}

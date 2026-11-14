@@ -69,6 +69,11 @@ pub struct CollectorStats {
     pub stale_failovers: u64,
     pub crossed_snapshots_skipped: u64,
     pub duplicate_events: u64,
+    /// Delta events delivered to a non-active replica: applied to that
+    /// replica's private book and deliberately not emitted. This is a
+    /// transport duplicate, distinct from a duplicate application.
+    #[serde(default)]
+    pub suppressed_replica_duplicates: u64,
     pub lifecycle_events: u64,
     /// Duplicate events (same market, kind and exchange timestamp) skipped by
     /// the lifecycle deduplication barrier. Non-zero is expected when
@@ -114,10 +119,21 @@ pub struct WriterCounters {
     pub flushes: AtomicU64,
     pub errors: AtomicU64,
     pub queue_depth: AtomicU64,
+    /// Highest `queue_depth` observed when a message was accepted. Proves
+    /// whether the configured writer queue bound was actually reached. The
+    /// channel enforces the bound; this counter may transiently read one
+    /// above it (the writer frees the slot before its decrement lands).
+    pub queue_high_water: AtomicU64,
     pub segments: AtomicU64,
 }
 
 impl WriterCounters {
+    /// Record one accepted message and update the high-water mark.
+    pub fn note_enqueued(&self) {
+        let depth = self.queue_depth.fetch_add(1, Ordering::Relaxed) + 1;
+        self.queue_high_water.fetch_max(depth, Ordering::Relaxed);
+    }
+
     #[must_use]
     pub fn snapshot(&self) -> WriterStats {
         WriterStats {
@@ -126,6 +142,7 @@ impl WriterCounters {
             flushes: self.flushes.load(Ordering::Relaxed),
             errors: self.errors.load(Ordering::Relaxed),
             queue_depth: self.queue_depth.load(Ordering::Relaxed),
+            queue_high_water: self.queue_high_water.load(Ordering::Relaxed),
             segments: self.segments.load(Ordering::Relaxed),
         }
     }
@@ -138,6 +155,15 @@ pub struct WriterStats {
     pub flushes: u64,
     pub errors: u64,
     pub queue_depth: u64,
+    /// Highest observed queue depth. Absent in reports written before this
+    /// counter was added; defaults to zero instead of failing to parse.
+    ///
+    /// The channel enforces the configured bound; this counter observes it
+    /// with a one-slot lag: the writer frees a channel slot when it dequeues
+    /// a message, but its decrement can land after a sender already counted
+    /// the freed slot, so a saturated queue may transiently read bound + 1.
+    #[serde(default)]
+    pub queue_high_water: u64,
     pub segments: u64,
 }
 
@@ -686,6 +712,21 @@ impl MetricsRegistry {
             core.deltas_emitted
         );
         counter!(
+            "collector_discontinuity_incidents_total",
+            "Discontinuity incidents opened since process start",
+            core.discontinuity_incidents
+        );
+        counter!(
+            "collector_unquantifiable_gaps_total",
+            "Discontinuity incidents whose gap interval is unquantifiable",
+            core.unquantifiable_gaps
+        );
+        counter!(
+            "collector_suppressed_replica_duplicates_total",
+            "Delta events applied to a non-active replica and suppressed",
+            core.suppressed_replica_duplicates
+        );
+        counter!(
             "collector_deltas_rejected_total",
             "Rejected inconsistent updates",
             core.deltas_rejected
@@ -749,6 +790,11 @@ impl MetricsRegistry {
             "collector_writer_queue_depth",
             "Messages waiting for the writer",
             snapshot.writer.queue_depth
+        );
+        gauge!(
+            "collector_writer_queue_high_water",
+            "Highest observed writer queue depth",
+            snapshot.writer.queue_high_water
         );
         gauge!(
             "collector_sources_connected",
@@ -1259,6 +1305,9 @@ mod tests {
         assert!(text.contains("# TYPE collector_sources_connected gauge"));
         assert!(text.contains("# TYPE collector_writer_queue_depth gauge"));
         assert!(text.contains("# TYPE collector_deltas_emitted_total counter"));
+        assert!(text.contains("# TYPE collector_discontinuity_incidents_total counter"));
+        assert!(text.contains("# TYPE collector_unquantifiable_gaps_total counter"));
+        assert!(text.contains("# TYPE collector_suppressed_replica_duplicates_total counter"));
         assert!(text.contains("# TYPE collector_writer_errors_total counter"));
         assert!(text.contains("# TYPE collector_discovery_rounds_total counter"));
         assert!(text.contains("# TYPE collector_symbols_anchored gauge"));

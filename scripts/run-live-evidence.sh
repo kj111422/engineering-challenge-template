@@ -2,6 +2,12 @@
 # Collect short, read-only production/public market-data captures from both
 # venues and verify SBE, per-symbol anchoring, and raw-frame journal integrity.
 # No proxy is configured: the application defaults to direct egress.
+#
+# LIVE_CONFIG (optional) names a TOML settings file passed to the collector
+# via --config. It exists so a capacity envelope for a full-universe run
+# (max_shards, max_total_connections, max_estimated_book_memory_mb) is a
+# reviewed, checked-in file rather than ad-hoc CLI flags. Explicit CLI flags
+# below still win over the file.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -101,10 +107,19 @@ run_venue() {
   local report="$directory/report.json"
   local journal_root="$directory/journal"
   local journal_run
+  local config_args=()
+  if [[ -n "${LIVE_CONFIG:-}" ]]; then
+    if [[ ! -r "$LIVE_CONFIG" ]]; then
+      echo "[$venue] LIVE_CONFIG is not readable: $LIVE_CONFIG" >&2
+      return 1
+    fi
+    config_args=(--config "$LIVE_CONFIG")
+  fi
 
   mkdir -p "$directory" || { echo "[$venue] cannot create $directory" >&2; return 1; }
   echo "[$venue] starting $DURATION_SECS-second market-data capture"
   if ! "$BIN" \
+    ${config_args[@]+"${config_args[@]}"} \
     --exchange "$venue" \
     --output "$capture" \
     --metadata "$metadata" \
