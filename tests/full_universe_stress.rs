@@ -593,7 +593,9 @@ async fn worktree_gate_accepts_clean_repository() {
 
 /// Deliberately-failing reference cell: forces a capacity-plan rejection so
 /// a failure manifest is produced on demand (ignored in CI; run locally to
-/// regenerate `measurements/stress/reference-*.json`).
+/// regenerate `measurements/stress/reference-*.json`). The manifest preserves
+/// the exact planner rejection reason — an infeasible cell is recorded, not
+/// silently skipped.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "reference artifact generator; run explicitly"]
 async fn reference_failed_cell_produces_manifest() {
@@ -608,7 +610,9 @@ async fn reference_failed_cell_produces_manifest() {
         force_capacity_reject: true,
         ..CellConfig::default()
     };
-    let outcome = stress_support::runner::run_cell(directory.path(), &config, None).await;
+    let outcome =
+        stress_support::runner::run_cell(directory.path(), &config, Some(manifest_out().as_path()))
+            .await;
     assert!(
         !outcome.acceptance.valid,
         "capacity rejection must fail acceptance"
