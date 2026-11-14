@@ -2,7 +2,12 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    clippy::print_stdout
+    clippy::print_stdout,
+    reason = "integration tests drive failure paths with unwrap/expect/panic and print diagnostics"
+)]
+#![allow(
+    clippy::allow_attributes,
+    reason = "test crates relax the production lint set wholesale; `expect` cannot express lints that may not fire"
 )]
 
 //! End-to-end tests for the dedicated Kalshi lifecycle control plane.

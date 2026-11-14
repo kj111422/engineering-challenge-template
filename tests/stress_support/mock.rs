@@ -203,23 +203,35 @@ impl MockState {
     }
 
     /// REST discovery record count served so far (for pagination accounting).
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "read by the pagination-accounting cells, which this increment does not wire yet"
+    )]
     pub fn http_requests(&self) -> usize {
         self.http_requests.load(Ordering::SeqCst)
     }
 
     /// Total websocket connections accepted since start (including reconnects).
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "read by the connection-topology cells, which this increment does not wire yet"
+    )]
     pub fn ws_connections(&self) -> usize {
         self.ws_connections.load(Ordering::SeqCst)
     }
 
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "read by the subscription-topology cells, which this increment does not wire yet"
+    )]
     pub fn book_subscribed_count(&self) -> usize {
         self.book_subscribed_count.load(Ordering::SeqCst)
     }
 
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "read by the subscription-topology cells, which this increment does not wire yet"
+    )]
     pub fn lifecycle_subscribed_count(&self) -> usize {
         self.lifecycle_subscribed_count.load(Ordering::SeqCst)
     }
@@ -460,7 +472,10 @@ impl MockState {
 
     /// Publish one lifecycle notification to every lifecycle connection with a
     /// shared timestamp (both replicas see the same venue event).
-    #[allow(dead_code)] // used by the lifecycle-churn scenario cells
+    #[expect(
+        dead_code,
+        reason = "called by the lifecycle-churn cells, which this increment does not wire yet"
+    )]
     pub fn publish_lifecycle(&self, event_type: &str, market: &str, extra: Value) {
         let ts = 1_700_000_000_000 + self.sent_count.load(Ordering::SeqCst) as i64;
         let mut msg = json!({
@@ -477,12 +492,18 @@ impl MockState {
 
     /// Close all book connections (or only a subset) to inject a connection
     /// loss. Book sockets only; lifecycle sockets stay up.
-    #[allow(dead_code)] // used by the recovery-sweep cells
+    #[expect(
+        dead_code,
+        reason = "read by the recovery-sweep cells, which this increment does not wire yet"
+    )]
     pub fn close_book_connections(&self) {
         self.close_connections_by(|entry| entry.sid_orderbook.is_some());
     }
 
-    #[allow(dead_code)] // used by the recovery-sweep cells
+    #[expect(
+        dead_code,
+        reason = "read by the recovery-sweep cells, which this increment does not wire yet"
+    )]
     pub fn close_all_connections(&self) {
         self.close_connections_by(|_| true);
     }

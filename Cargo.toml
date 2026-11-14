@@ -66,3 +66,8 @@ todo = "deny"
 unimplemented = "deny"
 dbg_macro = "deny"
 print_stdout = "deny"
+# Kernel Rust guideline: prefer `expect` over `allow`, because an `expect`
+# fails to compile once the lint no longer fires. Both lints are mechanical
+# enforcement of a rule that would otherwise depend on reviewer memory.
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"

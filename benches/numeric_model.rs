@@ -4,7 +4,12 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    clippy::print_stdout
+    clippy::print_stdout,
+    reason = "integration tests drive failure paths with unwrap/expect/panic and print diagnostics"
+)]
+#![allow(
+    clippy::allow_attributes,
+    reason = "test crates relax the production lint set wholesale; `expect` cannot express lints that may not fire"
 )]
 //! Run with `cargo bench --bench numeric_model`. The harness is `std`-only //! (`harness = false`), so this works on stable Rust and prints timings that
 //! can be compared across commits. The workloads mirror the 100,000-symbol

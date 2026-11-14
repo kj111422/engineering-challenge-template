@@ -1019,7 +1019,10 @@ async fn stop_metrics(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one worker event is dispatched against the core, writer, metrics and clock"
+)]
 async fn process_worker_event(
     event: WorkerEvent,
     core: &mut CollectorCore,

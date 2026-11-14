@@ -651,7 +651,6 @@ pub async fn run_worker(
     let _ = events.send(WorkerEvent::Stopped { source }).await;
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn handle_control(
     action: Control,
     desired: &mut BTreeSet<String>,
@@ -783,7 +782,10 @@ async fn close_and_stop(
 
 /// During backoff, keep accepting control messages so subscription changes and
 /// shutdown do not have to wait for the retry timer.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "reconnect bookkeeping spans the command channel, desired set, journal and clock"
+)]
 async fn backoff_or_stop(
     commands: &mut mpsc::Receiver<Control>,
     desired: &mut BTreeSet<String>,
@@ -893,7 +895,10 @@ fn failure_message(failure: &SessionFailure) -> String {
 /// their decode outcome. Transport-level idle events carry no payload: they
 /// neither advance the fence nor produce a journal record. Returns `false`
 /// after a fatal journal error that must stop the worker.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "an ingress journal record is identified by source, epoch and both timestamps"
+)]
 async fn journal_ingress(
     source: SourceId,
     connection_epoch: u64,

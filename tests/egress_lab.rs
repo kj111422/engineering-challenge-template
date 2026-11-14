@@ -14,7 +14,16 @@
 //! the venue permits, which cannot be established here.
 
 // Test helpers accept unwraps the same way `#[cfg(test)]` modules do.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "test helpers accept unwraps the same way `#[cfg(test)]` modules do"
+)]
+#![allow(
+    clippy::allow_attributes,
+    reason = "test crates relax the production lint set wholesale; `expect` cannot express lints that may not fire"
+)]
 
 use std::{
     collections::VecDeque,

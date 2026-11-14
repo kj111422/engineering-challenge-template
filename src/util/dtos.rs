@@ -6,6 +6,11 @@ use crate::{InvalidSide, Side};
 
 macro_rules! schemas {
     ($($schema:ident),* $(,)?) => {$(
+        #[expect(
+            clippy::allow_attributes,
+            clippy::allow_attributes_without_reason,
+            reason = "SBE codec is generated at build time; its lint suppressions cannot carry reasons"
+        )]
         pub mod $schema {
             #![allow(
                 dead_code,

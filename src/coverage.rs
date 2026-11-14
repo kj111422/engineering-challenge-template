@@ -178,7 +178,10 @@ pub fn run(
     ))
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "certification reads four independent evidence sets; a context struct would only rename them"
+)]
 fn certify(
     expected_counts: &BTreeMap<String, usize>,
     native_to_symbol: &BTreeMap<String, String>,

@@ -16,7 +16,12 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    clippy::print_stdout
+    clippy::print_stdout,
+    reason = "integration tests drive failure paths with unwrap/expect/panic and print diagnostics"
+)]
+#![allow(
+    clippy::allow_attributes,
+    reason = "test crates relax the production lint set wholesale; `expect` cannot express lints that may not fire"
 )]
 
 use std::{collections::BTreeSet, path::PathBuf, sync::Arc, time::Duration};
