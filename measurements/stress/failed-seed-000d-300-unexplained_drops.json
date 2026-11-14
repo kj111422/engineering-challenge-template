@@ -1,0 +1,149 @@
+{
+  "acceptance_reasons": [
+    "unexplained_drops"
+  ],
+  "build_profile": "release",
+  "cell_id": "failed-seed-000d-300-unexplained_drops",
+  "counts": {
+    "applied_events": 95,
+    "generated_events": 100,
+    "journaled_frames": 793,
+    "mock_queue_high_water": 301,
+    "mock_queue_saturated": 0,
+    "persistence_gap": 0,
+    "sbe_deltas": 95,
+    "sbe_messages": 695,
+    "sbe_snapshots": 600,
+    "transmitted_frames": 793,
+    "unexplained_drops": 5,
+    "writer_bytes": 65536,
+    "writer_messages": 695,
+    "writer_queue_high_water": 299
+  },
+  "coverage": {
+    "acknowledged": 300,
+    "acknowledged_set_sha256": "6ddaa10b7654f18a5b69f69a6fe817e9c1b06691a5e16b09c873e88f9f6f9fdc",
+    "anchored": 300,
+    "anchored_set_sha256": "6ddaa10b7654f18a5b69f69a6fe817e9c1b06691a5e16b09c873e88f9f6f9fdc",
+    "coverage_valid": true,
+    "decoys_absent": true,
+    "expected": 300,
+    "expected_set_sha256": "6ddaa10b7654f18a5b69f69a6fe817e9c1b06691a5e16b09c873e88f9f6f9fdc",
+    "missing_ack": 0,
+    "missing_anchor": 0,
+    "observed": 300,
+    "observed_set_sha256": "6ddaa10b7654f18a5b69f69a6fe817e9c1b06691a5e16b09c873e88f9f6f9fdc"
+  },
+  "delivery": {
+    "anchor_completed": true,
+    "anchor_ms": 1055,
+    "capacity_connections": 3,
+    "drain_completed": true,
+    "drain_detail": null
+  },
+  "event_ledger": {
+    "applied_events": 95,
+    "expected_applied": 95,
+    "generated_events": 100,
+    "injected_pre_wire_drops": 10,
+    "journaled_records": 793,
+    "persistence_gap": 0,
+    "reconciled": false,
+    "sbe_deltas": 95,
+    "unexplained_drops": 5
+  },
+  "evidence_class": "synthetic-loopback",
+  "execution_mode": "stress",
+  "failure_class": "unexplained_drops",
+  "generator_version": 1,
+  "host": {
+    "clock_resolution_ns": 41,
+    "clock_source": "std::time::Instant (monotonic)",
+    "cpu_count": 8,
+    "cpu_model": "Apple M1",
+    "disk_free_bytes": 115035860992,
+    "fd_limit": 1048576,
+    "kernel": "27.0.0",
+    "os": "Darwin 27.0.0",
+    "ram_mb": 8192,
+    "rustc_version": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "target_triple": "aarch64-apple-darwin"
+  },
+  "mock_transport": {
+    "acks_sent": 3,
+    "deltas_sent": 190,
+    "enqueued": 793,
+    "in_flight_at_end": 0,
+    "injected_pre_wire_drops": 10,
+    "outbound_capacity": 4096,
+    "queue_high_water": 301,
+    "queue_saturated": 0,
+    "snapshots_sent": 600,
+    "socket_written": 793
+  },
+  "performance": {
+    "cpu_seconds": {
+      "reason": "cpu_seconds not measured (no libc dependency)",
+      "value": null
+    },
+    "harness_process_rss_sample_bytes": 18464768,
+    "msgs_per_sec_max": {
+      "reason": "binned throughput lands with the reference matrix",
+      "value": null
+    },
+    "msgs_per_sec_p50": {
+      "reason": "binned throughput lands with the reference matrix",
+      "value": null
+    },
+    "msgs_per_sec_p95": {
+      "reason": "binned throughput lands with the reference matrix",
+      "value": null
+    },
+    "msgs_per_sec_p99": {
+      "reason": "binned throughput lands with the reference matrix",
+      "value": null
+    },
+    "snapshot_anchor_ms": 1055,
+    "writer_queue_high_water_mark": 299
+  },
+  "prng_algorithm_version": 1,
+  "provenance": {
+    "clean_run_required": false,
+    "commit": "5c9e45a4855c7aadd49091f14a8a232596bf6ae0",
+    "tracked_clean": true,
+    "tracked_diff_sha256": null,
+    "tracked_modified_files": [],
+    "untracked_file_count": 3
+  },
+  "run_id": "stress-1794668108768-33318",
+  "run_status": "failed",
+  "scenario": {
+    "distribution": "uniform",
+    "eligible_count": 300,
+    "events_published": 100,
+    "failure_injection": "DroppedFrames { count: 10 }",
+    "journal": true,
+    "lifecycle_replicas": 1,
+    "replicas_actual": 2,
+    "replicas_requested": 2,
+    "seed": 13,
+    "shards_actual": 1,
+    "shards_requested": 1,
+    "symbols": 300
+  },
+  "scenario_version": 1,
+  "schema_version": 1,
+  "source_commit": "5c9e45a4855c7aadd49091f14a8a232596bf6ae0",
+  "stress_harness_binary_sha256": "a095941eea7fe7dda28a5e78fa6de35099d0a817e5c22b19318d3c65cacda305",
+  "target_triple": "aarch64-apple-darwin",
+  "verify": {
+    "completeness_error": null,
+    "completeness_valid": true,
+    "coverage_error": null,
+    "coverage_valid": true,
+    "journal_complete": true,
+    "journal_record_count": 793,
+    "verify_error": null,
+    "verify_valid": true
+  }
+}

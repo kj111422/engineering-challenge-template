@@ -1,0 +1,154 @@
+{
+  "acceptance_reasons": [
+    "coverage_set_mismatch",
+    "coverage_invalid",
+    "unexplained_drops",
+    "mock_queue_saturation",
+    "anchor_timeout",
+    "drain_incomplete"
+  ],
+  "build_profile": "release",
+  "cell_id": "failed-seed-000e-200-coverage_set_mismatch",
+  "counts": {
+    "applied_events": 0,
+    "generated_events": 500,
+    "journaled_frames": 0,
+    "mock_queue_high_water": 8,
+    "mock_queue_saturated": 1386,
+    "persistence_gap": 0,
+    "sbe_deltas": 0,
+    "sbe_messages": 0,
+    "sbe_snapshots": 0,
+    "transmitted_frames": 0,
+    "unexplained_drops": 500,
+    "writer_bytes": 0,
+    "writer_messages": 0,
+    "writer_queue_high_water": 0
+  },
+  "coverage": {
+    "acknowledged": 200,
+    "acknowledged_set_sha256": "93b52a0c10104fa5bb7ba6758e76095e0b2142f56041e6ecce73550a200983ac",
+    "anchored": 0,
+    "anchored_set_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "coverage_valid": false,
+    "decoys_absent": true,
+    "expected": 200,
+    "expected_set_sha256": "93b52a0c10104fa5bb7ba6758e76095e0b2142f56041e6ecce73550a200983ac",
+    "missing_ack": 0,
+    "missing_anchor": 200,
+    "observed": 0,
+    "observed_set_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "delivery": {
+    "anchor_completed": false,
+    "anchor_ms": 8026,
+    "capacity_connections": 3,
+    "drain_completed": false,
+    "drain_detail": "drain deadline exceeded before every frame was accounted for"
+  },
+  "event_ledger": {
+    "applied_events": 0,
+    "expected_applied": 500,
+    "generated_events": 500,
+    "injected_pre_wire_drops": 0,
+    "journaled_records": 0,
+    "persistence_gap": 0,
+    "reconciled": false,
+    "sbe_deltas": 0,
+    "unexplained_drops": 500
+  },
+  "evidence_class": "synthetic-loopback",
+  "execution_mode": "stress",
+  "failure_class": "coverage_set_mismatch",
+  "generator_version": 1,
+  "host": {
+    "clock_resolution_ns": 41,
+    "clock_source": "std::time::Instant (monotonic)",
+    "cpu_count": 8,
+    "cpu_model": "Apple M1",
+    "disk_free_bytes": 115036270592,
+    "fd_limit": 1048576,
+    "kernel": "27.0.0",
+    "os": "Darwin 27.0.0",
+    "ram_mb": 8192,
+    "rustc_version": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "target_triple": "aarch64-apple-darwin"
+  },
+  "mock_transport": {
+    "acks_sent": 0,
+    "deltas_sent": 0,
+    "enqueued": 17,
+    "in_flight_at_end": 17,
+    "injected_pre_wire_drops": 0,
+    "outbound_capacity": 8,
+    "queue_high_water": 8,
+    "queue_saturated": 1386,
+    "snapshots_sent": 0,
+    "socket_written": 0
+  },
+  "performance": {
+    "cpu_seconds": {
+      "reason": "cpu_seconds not measured (no libc dependency)",
+      "value": null
+    },
+    "harness_process_rss_sample_bytes": 95404032,
+    "msgs_per_sec_max": {
+      "reason": "binned throughput lands with the reference matrix",
+      "value": null
+    },
+    "msgs_per_sec_p50": {
+      "reason": "binned throughput lands with the reference matrix",
+      "value": null
+    },
+    "msgs_per_sec_p95": {
+      "reason": "binned throughput lands with the reference matrix",
+      "value": null
+    },
+    "msgs_per_sec_p99": {
+      "reason": "binned throughput lands with the reference matrix",
+      "value": null
+    },
+    "snapshot_anchor_ms": 8026,
+    "writer_queue_high_water_mark": 0
+  },
+  "prng_algorithm_version": 1,
+  "provenance": {
+    "clean_run_required": false,
+    "commit": "5c9e45a4855c7aadd49091f14a8a232596bf6ae0",
+    "tracked_clean": true,
+    "tracked_diff_sha256": null,
+    "tracked_modified_files": [],
+    "untracked_file_count": 3
+  },
+  "run_id": "stress-1794668125054-33318",
+  "run_status": "failed",
+  "scenario": {
+    "distribution": "uniform",
+    "eligible_count": 200,
+    "events_published": 500,
+    "failure_injection": "MockQueueSaturate { capacity: 8 }",
+    "journal": true,
+    "lifecycle_replicas": 1,
+    "replicas_actual": 2,
+    "replicas_requested": 2,
+    "seed": 14,
+    "shards_actual": 1,
+    "shards_requested": 1,
+    "symbols": 200
+  },
+  "scenario_version": 1,
+  "schema_version": 1,
+  "source_commit": "5c9e45a4855c7aadd49091f14a8a232596bf6ae0",
+  "stress_harness_binary_sha256": "a095941eea7fe7dda28a5e78fa6de35099d0a817e5c22b19318d3c65cacda305",
+  "target_triple": "aarch64-apple-darwin",
+  "verify": {
+    "completeness_error": null,
+    "completeness_valid": true,
+    "coverage_error": null,
+    "coverage_valid": false,
+    "journal_complete": true,
+    "journal_record_count": 0,
+    "verify_error": null,
+    "verify_valid": true
+  }
+}
