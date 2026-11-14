@@ -178,6 +178,14 @@ impl CellAcceptance {
     }
 }
 
+/// Incident counters scraped from the collector's `/metrics` endpoint at the
+/// end of the run. `None` means the evidence is unavailable, not zero.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct IncidentCounters {
+    pub discontinuity_incidents: Option<u64>,
+    pub unquantifiable_gaps: Option<u64>,
+}
+
 /// Per-stage event accounting, derived from independent counters:
 /// the harness publish loop, the mock transmit ledger, the collector's
 /// `/metrics` counters and the decoded SBE capture. Nothing here is
@@ -251,6 +259,8 @@ pub struct CellOutput {
     pub sbe_messages: u64,
     /// Production writer queue high-water mark (from `WriterStats`).
     pub writer_queue_high_water: u64,
+    /// Continuity incidents observed at the end of the run.
+    pub incidents: IncidentCounters,
     pub ledger: EventLedger,
 }
 
@@ -418,31 +428,97 @@ fn settings_for(mock: &MockKalshi, directory: &Path, config: &CellConfig) -> Set
     settings
 }
 
+/// Outcome of reading one metric family from a scrape.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum MetricRead {
+    Present(f64),
+    Absent,
+    Malformed,
+}
+
+/// One parsed `/metrics` body. Labeled families are folded to the family name;
+/// a family that cannot be parsed is recorded as malformed instead of being
+/// treated as zero.
+#[derive(Debug, Default, Clone)]
+struct MetricSample {
+    values: HashMap<String, f64>,
+    malformed: BTreeSet<String>,
+}
+
+impl MetricSample {
+    fn read(&self, name: &str) -> MetricRead {
+        if let Some(value) = self.values.get(name) {
+            return MetricRead::Present(*value);
+        }
+        if self.malformed.contains(name) {
+            return MetricRead::Malformed;
+        }
+        MetricRead::Absent
+    }
+
+    /// A required metric is an error when it is absent or unparseable. This is
+    /// the difference between "the collector emitted zero" and "the evidence
+    /// path is broken".
+    fn required(&self, name: &str) -> Result<f64, String> {
+        match self.read(name) {
+            MetricRead::Present(value) => Ok(value),
+            MetricRead::Absent => Err(format!("required metric `{name}` is absent")),
+            MetricRead::Malformed => Err(format!("required metric `{name}` is malformed")),
+        }
+    }
+
+    /// An exact non-negative count, or `None` when the sample is not one.
+    fn count(&self, name: &str) -> Option<u64> {
+        match self.read(name) {
+            MetricRead::Present(value)
+                if value.is_finite() && value >= 0.0 && value.fract() == 0.0 =>
+            {
+                Some(value as u64)
+            }
+            _ => None,
+        }
+    }
+}
+
+fn parse_metrics(body: &str) -> MetricSample {
+    let mut sample = MetricSample::default();
+    for line in body.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((name, value)) = line.split_once(' ') else {
+            continue;
+        };
+        let name = name.split('{').next().unwrap_or(name);
+        match value.trim().parse::<f64>() {
+            Ok(parsed) => {
+                sample.values.insert(name.to_owned(), parsed);
+            }
+            Err(_) => {
+                sample.malformed.insert(name.to_owned());
+            }
+        }
+    }
+    sample
+}
+
 /// Scrape every plain metric sample from the collector's `/metrics` endpoint.
-/// Labeled families are folded to their family name; samples that do not
-/// parse as floats are ignored.
-async fn scrape_metrics(address: SocketAddr) -> Option<HashMap<String, f64>> {
+async fn scrape_metrics(address: SocketAddr) -> Option<MetricSample> {
     let mut stream = TcpStream::connect(address).await.ok()?;
     let request = format!("GET /metrics HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n");
     stream.write_all(request.as_bytes()).await.ok()?;
     let mut response = String::new();
     stream.read_to_string(&mut response).await.ok()?;
     let body = response.split_once("\r\n\r\n")?.1;
-    let mut metrics = HashMap::new();
-    for line in body.lines() {
-        let Some((name, value)) = line.split_once(' ') else {
-            continue;
-        };
-        let name = name.split('{').next().unwrap_or(name);
-        if let Ok(parsed) = value.parse::<f64>() {
-            metrics.insert(name.to_owned(), parsed);
-        }
-    }
-    Some(metrics)
+    Some(parse_metrics(body))
 }
 
 async fn scrape_metric(address: SocketAddr, metric: &str) -> Option<f64> {
-    scrape_metrics(address).await?.get(metric).copied()
+    match scrape_metrics(address).await?.read(metric) {
+        MetricRead::Present(value) => Some(value),
+        _ => None,
+    }
 }
 
 fn rss_sample_bytes() -> Option<u64> {
@@ -577,39 +653,108 @@ struct DrainBaselines {
     writer_errors: f64,
 }
 
-async fn capture_baseline(address: SocketAddr) -> Option<DrainBaselines> {
-    let deadline = Instant::now() + BASELINE_LIMIT;
+/// The fixed set of metrics the drain barrier requires. Every field is read
+/// explicitly; there is no `unwrap_or(0.0)` on this path.
+#[derive(Debug, Clone, Copy)]
+struct DrainSample {
+    deltas_emitted: f64,
+    writer_messages: f64,
+    writer_queue_depth: f64,
+    writer_errors: f64,
+}
+
+fn required_drain_sample(sample: &MetricSample) -> Result<DrainSample, String> {
+    Ok(DrainSample {
+        deltas_emitted: sample.required("collector_deltas_emitted_total")?,
+        writer_messages: sample.required("collector_writer_messages_total")?,
+        writer_queue_depth: sample.required("collector_writer_queue_depth")?,
+        writer_errors: sample.required("collector_writer_errors_total")?,
+    })
+}
+
+/// State of the drain barrier for one scrape.
+#[derive(Debug, PartialEq)]
+enum BarrierState {
+    Satisfied,
+    Waiting,
+    /// A required metric is absent or malformed. The evidence path is
+    /// unavailable; the cell must not report zero and must not certify.
+    Unavailable(String),
+    /// A counter moved backwards. Distinguishing a reset from absence keeps a
+    /// process restart from looking like a slow drain.
+    CounterReset(&'static str),
+}
+
+fn evaluate_barrier(
+    sample: &MetricSample,
+    base: &DrainBaselines,
+    expected: f64,
+    in_flight: u64,
+) -> BarrierState {
+    let required = match required_drain_sample(sample) {
+        Ok(required) => required,
+        Err(error) => return BarrierState::Unavailable(error),
+    };
+    if required.deltas_emitted < base.deltas_emitted {
+        return BarrierState::CounterReset("collector_deltas_emitted_total");
+    }
+    if required.writer_messages < base.writer_messages {
+        return BarrierState::CounterReset("collector_writer_messages_total");
+    }
+    if required.writer_errors < base.writer_errors {
+        return BarrierState::CounterReset("collector_writer_errors_total");
+    }
+    if in_flight == 0
+        && required.deltas_emitted >= base.deltas_emitted + expected
+        && required.writer_messages >= base.writer_messages + expected
+        && required.writer_queue_depth == 0.0
+        && required.writer_errors == base.writer_errors
+    {
+        BarrierState::Satisfied
+    } else {
+        BarrierState::Waiting
+    }
+}
+
+async fn capture_baseline(address: SocketAddr) -> Result<DrainBaselines, String> {
+    capture_baseline_until(address, Instant::now() + BASELINE_LIMIT).await
+}
+
+async fn capture_baseline_until(
+    address: SocketAddr,
+    deadline: Instant,
+) -> Result<DrainBaselines, String> {
     let mut previous: Option<(f64, f64)> = None;
+    let mut last_error = "metrics endpoint unavailable".to_owned();
     loop {
-        let metrics = scrape_metrics(address).await?;
-        let messages = metrics
-            .get("collector_writer_messages_total")
-            .copied()
-            .unwrap_or(0.0);
-        let depth = metrics
-            .get("collector_writer_queue_depth")
-            .copied()
-            .unwrap_or(f64::INFINITY);
-        if let Some((prev_messages, prev_depth)) = previous
-            && prev_depth == 0.0
-            && depth == 0.0
-            && prev_messages == messages
-        {
-            return Some(DrainBaselines {
-                deltas_emitted: metrics
-                    .get("collector_deltas_emitted_total")
-                    .copied()
-                    .unwrap_or(0.0),
-                writer_messages: messages,
-                writer_errors: metrics
-                    .get("collector_writer_errors_total")
-                    .copied()
-                    .unwrap_or(0.0),
-            });
+        match scrape_metrics(address).await {
+            Some(sample) => match required_drain_sample(&sample) {
+                Ok(required) => {
+                    if let Some((previous_messages, previous_depth)) = previous
+                        && previous_depth == 0.0
+                        && required.writer_queue_depth == 0.0
+                        && previous_messages == required.writer_messages
+                    {
+                        return Ok(DrainBaselines {
+                            deltas_emitted: required.deltas_emitted,
+                            writer_messages: required.writer_messages,
+                            writer_errors: required.writer_errors,
+                        });
+                    }
+                    previous = Some((required.writer_messages, required.writer_queue_depth));
+                }
+                Err(error) => {
+                    previous = None;
+                    last_error = error;
+                }
+            },
+            None => {
+                previous = None;
+                last_error = "metrics endpoint unavailable".to_owned();
+            }
         }
-        previous = Some((messages, depth));
         if Instant::now() >= deadline {
-            return None;
+            return Err(last_error);
         }
         sleep(METRICS_POLL).await;
     }
@@ -621,87 +766,122 @@ pub async fn run_cell(
     manifest_out: Option<&Path>,
 ) -> CellOutcome {
     let outcome = run_cell_inner(directory, config).await;
-    match manifest_out {
-        Some(out_dir) => write_cell_manifest(outcome, config, out_dir),
-        None => outcome,
-    }
+    finalize_outcome(outcome, config, manifest_out)
 }
 
-/// Write the cell manifest (and index entry when the cell is healthy).
-/// The index is validated *before* any artifact is written: a malformed or
-/// unreadable index flips the outcome to `manifest_index_error` and leaves
-/// every existing byte untouched — an unverifiable artifact is never
-/// presented as success.
-fn write_cell_manifest(outcome: CellOutcome, config: &CellConfig, out_dir: &Path) -> CellOutcome {
-    if let Err(error) = super::manifest::validate_index(&out_dir.join("index.json")) {
-        return CellOutcome {
-            provenance: outcome.provenance,
-            output: outcome.output,
-            acceptance: CellAcceptance::from_reasons(vec![
-                "manifest_index_error".to_owned(),
-                format!("{error}"),
-            ]),
-        };
+/// The filename carries a filesystem-safe summary; the exact verdict stays in
+/// the body and in the index entry.
+fn cell_id_for(outcome: &CellOutcome, config: &CellConfig) -> String {
+    if outcome.acceptance.valid {
+        return format!("seed-{:04x}-{}-uniform", config.seed, config.symbols);
     }
-    let acceptance_valid = outcome.acceptance.valid;
-    let status = outcome.acceptance.status();
-    let cell_id = if acceptance_valid {
-        format!("seed-{:04x}-{}-uniform", config.seed, config.symbols)
-    } else {
-        // The exact failure class stays in the manifest body; the filename
-        // only carries a filesystem-safe summary of it.
-        let class = outcome
-            .acceptance
-            .failure_class
-            .as_deref()
-            .unwrap_or("unknown");
-        let summary: String = class
-            .chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                    c
-                } else {
-                    '_'
-                }
-            })
-            .collect();
-        format!(
-            "{status}-seed-{:04x}-{}-{}",
-            config.seed, config.symbols, summary
-        )
+    let class = outcome
+        .acceptance
+        .failure_class
+        .as_deref()
+        .unwrap_or("unknown");
+    let summary: String = class
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '-' || character == '_' {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!(
+        "{}-seed-{:04x}-{}-{}",
+        outcome.acceptance.status(),
+        config.seed,
+        config.symbols,
+        summary
+    )
+}
+
+/// Validate the manifest contract, then publish. A success verdict is only
+/// kept when every required field is present; a missing field converts the
+/// verdict to `manifest_incomplete` and the artifact records that failure.
+fn finalize_outcome(
+    outcome: CellOutcome,
+    config: &CellConfig,
+    manifest_out: Option<&Path>,
+) -> CellOutcome {
+    let cell_id = cell_id_for(&outcome, config);
+    let document = build_cell_manifest(&outcome, config, &cell_id);
+
+    if outcome.acceptance.valid {
+        let missing = super::manifest::missing_required_fields(&document);
+        if !missing.is_empty() {
+            let mut reasons = vec!["manifest_incomplete".to_owned()];
+            reasons.extend(
+                missing
+                    .into_iter()
+                    .map(|path| format!("missing_field: {path}")),
+            );
+            let failed = CellOutcome {
+                output: outcome.output,
+                provenance: outcome.provenance,
+                acceptance: CellAcceptance::from_reasons(reasons),
+            };
+            let failed_id = cell_id_for(&failed, config);
+            let failed_document = build_cell_manifest(&failed, config, &failed_id);
+            return publish(failed, config, manifest_out, &failed_id, failed_document);
+        }
+    }
+    publish(outcome, config, manifest_out, &cell_id, document)
+}
+
+/// Publish index-first through [`super::manifest::publish_cell`]. Recovery of
+/// an interrupted earlier attempt runs before the new publication, so a
+/// pending entry never survives into the next cell's view of the index.
+fn publish(
+    outcome: CellOutcome,
+    config: &CellConfig,
+    manifest_out: Option<&Path>,
+    cell_id: &str,
+    document: Map<String, Value>,
+) -> CellOutcome {
+    let Some(out_dir) = manifest_out else {
+        return outcome;
     };
-    let manifest = build_cell_manifest(&outcome, config, &cell_id);
-    if let Err(error) = super::manifest::write_atomic(
-        &out_dir.join(format!("{cell_id}.json")),
-        &Value::Object(manifest),
-    ) {
-        return CellOutcome {
-            provenance: outcome.provenance,
-            output: outcome.output,
-            acceptance: CellAcceptance::from_reasons(vec![
-                "manifest_write_error".to_owned(),
-                format!("{error}"),
-            ]),
-        };
+    let index_path = out_dir.join("index.json");
+    if let Err(error) = super::manifest::recover(&index_path) {
+        return with_manifest_failure(outcome, "manifest_index_error", &error);
     }
     let entry = json!({
-        "path": format!("{cell_id}.json"),
-        "run_status": status,
+        "run_status": outcome.acceptance.status(),
         "seed": config.seed,
         "symbols": config.symbols,
     });
-    if let Err(error) = super::manifest::upsert_cell(&out_dir.join("index.json"), &cell_id, entry) {
-        // Artifact cannot be trusted; fail closed but keep the cell output.
-        return CellOutcome {
-            provenance: outcome.provenance,
-            output: outcome.output,
-            acceptance: CellAcceptance::from_reasons(vec![
-                "manifest_index_error".to_owned(),
-                format!("{error}"),
-            ]),
-        };
+    let entry = match entry {
+        Value::Object(entry) => entry,
+        _ => Map::new(),
+    };
+    match super::manifest::publish_cell(&index_path, cell_id, entry, &Value::Object(document)) {
+        Ok(()) => outcome,
+        Err(super::manifest::PublishError::Index { source }) => {
+            with_manifest_failure(outcome, "manifest_index_error", &source)
+        }
+        Err(super::manifest::PublishError::Body { source }) => {
+            with_manifest_failure(outcome, "manifest_write_error", &source)
+        }
+        Err(super::manifest::PublishError::Serialize { source }) => {
+            with_manifest_failure(outcome, "manifest_serialize_error", &source)
+        }
     }
-    outcome
+}
+
+fn with_manifest_failure(
+    outcome: CellOutcome,
+    class: &str,
+    error: &dyn std::fmt::Display,
+) -> CellOutcome {
+    CellOutcome {
+        output: outcome.output,
+        provenance: outcome.provenance,
+        acceptance: CellAcceptance::from_reasons(vec![class.to_owned(), format!("{error}")]),
+    }
 }
 
 async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
@@ -795,13 +975,24 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
     let anchored_time = anchor_start.elapsed();
 
     // Writer-side baseline: the writer must be quiescent before the workload
-    // is offered so the drain barrier can attribute every message.
+    // is offered so the drain barrier can attribute every message. A missing
+    // or malformed mandatory metric is an evidence failure, not a zero.
+    let mut baseline_error: Option<String> = None;
     let baseline = if matches!(config.fail_inject, Some(FailInject::ShutdownBeforeDrain)) {
         None
     } else {
         match metrics_addr {
-            Some(addr) => capture_baseline(addr).await,
-            None => None,
+            Some(addr) => match capture_baseline(addr).await {
+                Ok(baseline) => Some(baseline),
+                Err(error) => {
+                    baseline_error = Some(error);
+                    None
+                }
+            },
+            None => {
+                baseline_error = Some("metrics endpoint is not configured".to_owned());
+                None
+            }
         }
     };
 
@@ -818,44 +1009,47 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
     // Drain barrier: every frame must leave the mock's outbound queue, be
     // socket-written, reach the collector and be accounted for by the core
     // and the writer before shutdown is requested. A timeout classifies the
-    // run as incomplete; no fixed sleep is involved.
+    // run as incomplete; a missing or malformed metric classifies the
+    // evidence path as unavailable. No fixed sleep is involved.
     let mut drain_completed = false;
     let mut drain_detail: Option<String> = None;
+    let mut drain_evidence_error: Option<String> = None;
     let mut last_deltas = baseline.map(|base| base.deltas_emitted);
     if matches!(config.fail_inject, Some(FailInject::ShutdownBeforeDrain)) {
         drain_detail = Some("shutdown requested before the drain barrier".to_owned());
-    } else if baseline.is_none() {
-        drain_detail = Some("writer baseline unavailable".to_owned());
+    } else if let Some(error) = &baseline_error {
+        drain_detail = Some(format!("writer baseline unavailable: {error}"));
+        drain_evidence_error = Some("drain_metrics_unavailable".to_owned());
     } else if let (Some(addr), Some(base)) = (metrics_addr, baseline) {
         let deadline = Instant::now() + drain_limit;
+        let mut unavailable: Option<String> = None;
         loop {
-            if let Some(metrics) = scrape_metrics(addr).await {
-                let deltas = metrics
-                    .get("collector_deltas_emitted_total")
-                    .copied()
-                    .unwrap_or(0.0);
-                let messages = metrics
-                    .get("collector_writer_messages_total")
-                    .copied()
-                    .unwrap_or(0.0);
-                let depth = metrics
-                    .get("collector_writer_queue_depth")
-                    .copied()
-                    .unwrap_or(f64::INFINITY);
-                let errors = metrics
-                    .get("collector_writer_errors_total")
-                    .copied()
-                    .unwrap_or(f64::INFINITY);
-                last_deltas = Some(deltas);
-                let expected = plan.expected_applied as f64;
-                if mock.state().in_flight() == 0
-                    && deltas >= base.deltas_emitted + expected
-                    && messages >= base.writer_messages + expected
-                    && depth == 0.0
-                    && errors == base.writer_errors
-                {
-                    drain_completed = true;
-                    break;
+            if let Some(sample) = scrape_metrics(addr).await {
+                if let MetricRead::Present(deltas) = sample.read("collector_deltas_emitted_total") {
+                    last_deltas = Some(deltas);
+                }
+                match evaluate_barrier(
+                    &sample,
+                    &base,
+                    plan.expected_applied as f64,
+                    mock.state().in_flight(),
+                ) {
+                    BarrierState::Satisfied => {
+                        drain_completed = true;
+                        break;
+                    }
+                    BarrierState::Waiting => {
+                        unavailable = None;
+                    }
+                    BarrierState::Unavailable(error) => {
+                        unavailable = Some(error);
+                    }
+                    BarrierState::CounterReset(metric) => {
+                        drain_detail =
+                            Some(format!("counter `{metric}` moved backwards during the run"));
+                        drain_evidence_error = Some("counter_reset".to_owned());
+                        break;
+                    }
                 }
             }
             if Instant::now() >= deadline {
@@ -863,18 +1057,42 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
             }
             sleep(METRICS_POLL).await;
         }
-        if !drain_completed {
-            drain_detail =
-                Some("drain deadline exceeded before every frame was accounted for".to_owned());
+        if !drain_completed && drain_evidence_error.is_none() {
+            match unavailable {
+                Some(error) => {
+                    drain_detail = Some(error);
+                    drain_evidence_error = Some("drain_metrics_unavailable".to_owned());
+                }
+                None => {
+                    drain_detail = Some(
+                        "drain deadline exceeded before every frame was accounted for".to_owned(),
+                    );
+                }
+            }
         }
     }
 
-    // Last observation of the applied counter before shutdown.
-    if let Some(addr) = metrics_addr
-        && let Some(deltas) = scrape_metric(addr, "collector_deltas_emitted_total").await
-    {
+    // Final scrape before shutdown: applied counter and incident counters.
+    let final_sample = match metrics_addr {
+        Some(addr) => scrape_metrics(addr).await,
+        None => None,
+    };
+    if let Some(deltas) = final_sample.as_ref().and_then(|sample| {
+        match sample.read("collector_deltas_emitted_total") {
+            MetricRead::Present(value) => Some(value),
+            _ => None,
+        }
+    }) {
         last_deltas = Some(deltas);
     }
+    let incidents = IncidentCounters {
+        discontinuity_incidents: final_sample
+            .as_ref()
+            .and_then(|sample| sample.count("collector_discontinuity_incidents_total")),
+        unquantifiable_gaps: final_sample
+            .as_ref()
+            .and_then(|sample| sample.count("collector_unquantifiable_gaps_total")),
+    };
 
     done.notify_one();
     let report = match tokio::time::timeout(FINISH_LIMIT, &mut handle).await {
@@ -1068,6 +1286,7 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
         reasons.push("persistence_gap".to_owned());
     }
     if transmit.queue_saturated > 0 {
+        reasons.push("mock_throughput_limited".to_owned());
         reasons.push("mock_queue_saturation".to_owned());
     }
     if let Some(error) = &sbe_scan_error {
@@ -1079,7 +1298,10 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
         reasons.push("anchor_timeout".to_owned());
     }
     if !drain_completed {
-        reasons.push("drain_incomplete".to_owned());
+        match &drain_evidence_error {
+            Some(class) => reasons.push(class.clone()),
+            None => reasons.push("drain_incomplete".to_owned()),
+        }
     }
 
     let acceptance = if reasons.is_empty() {
@@ -1120,6 +1342,7 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
             sbe_deltas,
             sbe_snapshots,
             sbe_messages,
+            incidents,
             ledger,
             mock: transmit,
         }),
@@ -1233,9 +1456,13 @@ pub fn build_cell_manifest(
 ) -> Map<String, Value> {
     let host = host_json();
     let output = outcome.output.as_ref();
+    let binary_sha256 = harness_binary_sha256();
 
     let mut document = Map::new();
-    document.insert("schema_version".to_owned(), json!(1));
+    document.insert(
+        "schema_version".to_owned(),
+        json!(super::manifest::STRESS_MANIFEST_SCHEMA_VERSION),
+    );
     document.insert("run_id".to_owned(), json!(run_id()));
     document.insert("cell_id".to_owned(), json!(cell_id));
     document.insert("execution_mode".to_owned(), json!("stress"));
@@ -1275,7 +1502,14 @@ pub fn build_cell_manifest(
     document.insert("target_triple".to_owned(), json!(target_triple()));
     document.insert(
         "stress_harness_binary_sha256".to_owned(),
-        harness_binary_sha256()
+        binary_sha256
+            .clone()
+            .map(Value::from)
+            .unwrap_or_else(|| super::manifest::unavailable("current_exe unreadable")),
+    );
+    document.insert(
+        "collector_binary_sha256".to_owned(),
+        binary_sha256
             .map(Value::from)
             .unwrap_or_else(|| super::manifest::unavailable("current_exe unreadable")),
     );
@@ -1294,7 +1528,7 @@ pub fn build_cell_manifest(
                 .unwrap_or_else(|| "unknown".to_owned())
         ),
     );
-    document.insert("scenario".to_owned(), json!({
+    let scenario = json!({
         "seed": config.seed,
         "symbols": config.symbols,
         "eligible_count": output.map(|o| o.eligible_count).unwrap_or(0),
@@ -1307,7 +1541,41 @@ pub fn build_cell_manifest(
         "distribution": if config.hot_pair { "zipf_hot_pair" } else { "uniform" },
         "journal": config.journal,
         "failure_injection": config.fail_inject.map(|f| format!("{f:?}")),
-    }));
+    });
+    document.insert(
+        "configuration_sha256".to_owned(),
+        Value::from(sha256_hex(scenario.to_string().as_bytes())),
+    );
+    document.insert("scenario".to_owned(), scenario);
+
+    let desired_topology = json!({
+        "shards": config.shards.unwrap_or(0),
+        "replicas": config.replicas,
+        "lifecycle_replicas": config.lifecycle_replicas,
+        "writer_queue": config.writer_queue.unwrap_or(4_096),
+    });
+    let actual_topology = match output.and_then(|o| o.report.capacity.as_ref()) {
+        Some(plan) => json!({
+            "shards": plan.shards,
+            "replicas": plan.replicas,
+            "lifecycle_connections": plan.lifecycle_connections,
+            "total_connections": plan.total_connections,
+        }),
+        None => super::manifest::unavailable("capacity plan unavailable"),
+    };
+    let capacity_plan = output
+        .and_then(|o| o.report.capacity.as_ref())
+        .and_then(|plan| serde_json::to_value(plan).ok())
+        .unwrap_or_else(|| super::manifest::unavailable("capacity plan unavailable"));
+    document.insert(
+        "collector".to_owned(),
+        json!({
+            "desired_topology": desired_topology,
+            "actual_topology": actual_topology,
+            "capacity_plan": capacity_plan,
+            "in_process": true,
+        }),
+    );
 
     document.insert(
         "counts".to_owned(),
@@ -1348,6 +1616,28 @@ pub fn build_cell_manifest(
             "queue_high_water": output.map(|o| o.mock.queue_high_water),
             "queue_saturated": output.map(|o| o.mock.queue_saturated),
             "injected_pre_wire_drops": output.map(|o| o.mock.injected_pre_wire_drops),
+        }),
+    );
+
+    let queue_high_water = output
+        .map(|output| output.mock.queue_high_water)
+        .unwrap_or(0);
+    let queue_capacity = output
+        .map(|output| output.mock.outbound_capacity)
+        .unwrap_or(0);
+    let pressure_ppm = queue_high_water
+        .saturating_mul(1_000_000)
+        .checked_div(queue_capacity)
+        .unwrap_or(0);
+    document.insert(
+        "harness".to_owned(),
+        json!({
+            "mock_queue_high_water": output.map(|output| output.mock.queue_high_water),
+            "mock_queue_capacity": output.map(|output| output.mock.outbound_capacity),
+            "mock_queue_pressure_ppm": pressure_ppm,
+            "throughput_limited": output
+                .map(|output| output.mock.queue_saturated > 0 || pressure_ppm >= 900_000)
+                .unwrap_or(false),
         }),
     );
 
@@ -1398,6 +1688,7 @@ pub fn build_cell_manifest(
         "observed_set_sha256": observed_set_sha256,
         "decoys_absent": output.map(|o| o.decoy_absent),
         "coverage_valid": output.map(|o| o.coverage.as_ref().map(|c| c.valid).unwrap_or(false)),
+        "per_epoch": [],
     }));
 
     document.insert("verify".to_owned(), json!({
@@ -1419,6 +1710,45 @@ pub fn build_cell_manifest(
         "capacity_connections": output.map(|o| o.capacity_connections).unwrap_or(0),
     }));
 
+    let incidents = output.map(|output| output.incidents);
+    let disk_free = HostInfo::probe().disk_free_bytes;
+    document.insert(
+        "disk".to_owned(),
+        json!({
+            "free_bytes_before_start": disk_free
+                .map(Value::from)
+                .unwrap_or_else(|| super::manifest::unavailable("df unavailable")),
+            "bytes_written": output
+                .map(|output| output.report.writer.bytes)
+                .map(Value::from)
+                .unwrap_or_else(|| super::manifest::unavailable("writer report unavailable")),
+            "disk_ceiling_bytes": super::manifest::unavailable(
+                "STRESS_DISK_CEILING is not configured for this cell"
+            ),
+            "disk_ceiling_reached": false,
+        }),
+    );
+    document.insert(
+        "incidents".to_owned(),
+        json!({
+            "discontinuity_incidents": incidents
+                .and_then(|incidents| incidents.discontinuity_incidents)
+                .map(Value::from)
+                .unwrap_or_else(|| super::manifest::unavailable(
+                    "collector_discontinuity_incidents_total unavailable"
+                )),
+            "unquantifiable_gaps": incidents
+                .and_then(|incidents| incidents.unquantifiable_gaps)
+                .map(Value::from)
+                .unwrap_or_else(|| super::manifest::unavailable(
+                    "collector_unquantifiable_gaps_total unavailable"
+                )),
+            "queue_saturated_events": output.map(|output| output.mock.queue_saturated),
+            "injected_pre_wire_drops": output.map(|output| output.mock.injected_pre_wire_drops),
+            "writer_errors": output.map(|output| output.report.writer.errors),
+        }),
+    );
+
     document.insert("performance".to_owned(), json!({
         "msgs_per_sec_p50": super::manifest::unavailable("binned throughput lands with the reference matrix"),
         "msgs_per_sec_p95": super::manifest::unavailable("binned throughput lands with the reference matrix"),
@@ -1437,4 +1767,202 @@ pub fn build_cell_manifest(
     }));
 
     document
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use tokio::net::TcpListener;
+
+    use super::*;
+
+    fn base() -> DrainBaselines {
+        DrainBaselines {
+            deltas_emitted: 0.0,
+            writer_messages: 0.0,
+            writer_errors: 0.0,
+        }
+    }
+
+    #[test]
+    fn absent_metric_is_not_zero() {
+        let sample = parse_metrics("collector_deltas_emitted_total 5\n");
+        assert_eq!(
+            sample.read("collector_writer_messages_total"),
+            MetricRead::Absent
+        );
+        let error = sample
+            .required("collector_writer_messages_total")
+            .expect_err("absence must be an error");
+        assert!(error.contains("absent"), "{error}");
+    }
+
+    #[test]
+    fn malformed_metric_is_not_zero() {
+        let sample = parse_metrics("collector_writer_messages_total not-a-number\n");
+        assert_eq!(
+            sample.read("collector_writer_messages_total"),
+            MetricRead::Malformed
+        );
+        let error = sample
+            .required("collector_writer_messages_total")
+            .expect_err("malformed must be an error");
+        assert!(error.contains("malformed"), "{error}");
+    }
+
+    #[test]
+    fn labeled_families_fold_to_the_family_name() {
+        let sample = parse_metrics("collector_deltas_emitted_total{shard=\"0\"} 7\n");
+        assert_eq!(
+            sample.read("collector_deltas_emitted_total"),
+            MetricRead::Present(7.0)
+        );
+    }
+
+    #[test]
+    fn barrier_rejects_a_missing_mandatory_metric() {
+        let sample = parse_metrics(
+            "collector_deltas_emitted_total 10\n\
+             collector_writer_queue_depth 0\n\
+             collector_writer_errors_total 0\n",
+        );
+        match evaluate_barrier(&sample, &base(), 10.0, 0) {
+            BarrierState::Unavailable(message) => {
+                assert!(
+                    message.contains("collector_writer_messages_total"),
+                    "{message}"
+                );
+            }
+            other => panic!("expected unavailable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn barrier_rejects_a_malformed_mandatory_metric() {
+        let sample = parse_metrics(
+            "collector_deltas_emitted_total 10\n\
+             collector_writer_messages_total nope\n\
+             collector_writer_queue_depth 0\n\
+             collector_writer_errors_total 0\n",
+        );
+        assert!(matches!(
+            evaluate_barrier(&sample, &base(), 10.0, 0),
+            BarrierState::Unavailable(_)
+        ));
+    }
+
+    #[test]
+    fn barrier_distinguishes_a_counter_reset() {
+        let base = DrainBaselines {
+            deltas_emitted: 100.0,
+            writer_messages: 100.0,
+            writer_errors: 0.0,
+        };
+        let sample = parse_metrics(
+            "collector_deltas_emitted_total 5\n\
+             collector_writer_messages_total 5\n\
+             collector_writer_queue_depth 0\n\
+             collector_writer_errors_total 0\n",
+        );
+        assert_eq!(
+            evaluate_barrier(&sample, &base, 10.0, 0),
+            BarrierState::CounterReset("collector_deltas_emitted_total")
+        );
+    }
+
+    #[test]
+    fn barrier_satisfies_only_when_every_metric_agrees() {
+        let sample = parse_metrics(
+            "collector_deltas_emitted_total 10\n\
+             collector_writer_messages_total 10\n\
+             collector_writer_queue_depth 0\n\
+             collector_writer_errors_total 0\n",
+        );
+        assert_eq!(
+            evaluate_barrier(&sample, &base(), 10.0, 0),
+            BarrierState::Satisfied
+        );
+        assert_eq!(
+            evaluate_barrier(&sample, &base(), 10.0, 1),
+            BarrierState::Waiting
+        );
+    }
+
+    /// Serve a scripted sequence of `/metrics` bodies, repeating the last body
+    /// once the script is exhausted.
+    async fn serve_metrics(bodies: Vec<String>) -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind stub metrics server");
+        let address = listener.local_addr().expect("stub address");
+        let bodies = Arc::new(bodies);
+        tokio::spawn(async move {
+            let mut index = 0usize;
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let body = bodies
+                    .get(index)
+                    .or_else(|| bodies.last())
+                    .cloned()
+                    .unwrap_or_default();
+                index = index.saturating_add(1);
+                let mut request = [0u8; 1024];
+                let _ = stream.read(&mut request).await;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        });
+        address
+    }
+
+    const DELAYED_BODY: &str = "collector_deltas_emitted_total 10\n\
+        collector_writer_queue_depth 0\n\
+        collector_writer_errors_total 0\n";
+    const COMPLETE_BODY: &str = "collector_deltas_emitted_total 10\n\
+        collector_writer_messages_total 20\n\
+        collector_writer_queue_depth 0\n\
+        collector_writer_errors_total 0\n";
+    const MALFORMED_BODY: &str = "collector_deltas_emitted_total 10\n\
+        collector_writer_messages_total nope\n\
+        collector_writer_queue_depth 0\n\
+        collector_writer_errors_total 0\n";
+
+    #[tokio::test]
+    async fn baseline_fails_closed_on_a_missing_metric() {
+        let address = serve_metrics(vec![DELAYED_BODY.to_owned()]).await;
+        let error = capture_baseline_until(address, Instant::now() + Duration::from_millis(150))
+            .await
+            .expect_err("a persistent absence must fail the baseline");
+        assert!(error.contains("collector_writer_messages_total"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn baseline_fails_closed_on_a_malformed_metric() {
+        let address = serve_metrics(vec![MALFORMED_BODY.to_owned()]).await;
+        let error = capture_baseline_until(address, Instant::now() + Duration::from_millis(150))
+            .await
+            .expect_err("a malformed metric must fail the baseline");
+        assert!(error.contains("malformed"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn baseline_recovers_from_a_delayed_metric() {
+        let address = serve_metrics(vec![
+            DELAYED_BODY.to_owned(),
+            COMPLETE_BODY.to_owned(),
+            COMPLETE_BODY.to_owned(),
+        ])
+        .await;
+        let baseline = capture_baseline_until(address, Instant::now() + Duration::from_secs(2))
+            .await
+            .expect("a metric that appears later must be accepted");
+        assert_eq!(baseline.writer_messages, 20.0);
+        assert_eq!(baseline.deltas_emitted, 10.0);
+    }
 }

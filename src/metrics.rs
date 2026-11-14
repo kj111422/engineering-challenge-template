@@ -707,6 +707,16 @@ impl MetricsRegistry {
             core.deltas_emitted
         );
         counter!(
+            "collector_discontinuity_incidents_total",
+            "Discontinuity incidents opened since process start",
+            core.discontinuity_incidents
+        );
+        counter!(
+            "collector_unquantifiable_gaps_total",
+            "Discontinuity incidents whose gap interval is unquantifiable",
+            core.unquantifiable_gaps
+        );
+        counter!(
             "collector_deltas_rejected_total",
             "Rejected inconsistent updates",
             core.deltas_rejected
@@ -1285,6 +1295,8 @@ mod tests {
         assert!(text.contains("# TYPE collector_sources_connected gauge"));
         assert!(text.contains("# TYPE collector_writer_queue_depth gauge"));
         assert!(text.contains("# TYPE collector_deltas_emitted_total counter"));
+        assert!(text.contains("# TYPE collector_discontinuity_incidents_total counter"));
+        assert!(text.contains("# TYPE collector_unquantifiable_gaps_total counter"));
         assert!(text.contains("# TYPE collector_writer_errors_total counter"));
         assert!(text.contains("# TYPE collector_discovery_rounds_total counter"));
         assert!(text.contains("# TYPE collector_symbols_anchored gauge"));

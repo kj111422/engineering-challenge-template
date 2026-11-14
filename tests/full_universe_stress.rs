@@ -736,3 +736,104 @@ fn manifest_out() -> std::path::PathBuf {
         std::env::var("STRESS_MANIFEST_OUT").expect("STRESS_MANIFEST_OUT is checked by callers"),
     )
 }
+
+/// The success artifact must be complete, indexed and hash-verified before the
+/// cell reports success. This is the end-to-end acceptance rule.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn successful_manifest_is_complete_and_published() {
+    let directory = tempfile::tempdir().unwrap();
+    let out = directory.path().join("manifests");
+    let config = CellConfig {
+        seed: 21,
+        symbols: 60,
+        events: 5,
+        limits: Some((20, 2)),
+        ..headless_cell_config(21, 60)
+    };
+    let outcome = stress_support::runner::run_cell(directory.path(), &config, Some(&out)).await;
+    assert!(
+        outcome.acceptance.valid,
+        "reasons={:?}",
+        outcome.acceptance.reasons
+    );
+
+    let index = stress_support::manifest::read_index(&out.join("index.json")).unwrap();
+    let cells = index["cells"].as_object().expect("cells object");
+    let (cell_id, entry) = cells.iter().next().expect("one published cell");
+    assert_eq!(
+        entry["publication_state"].as_str(),
+        Some("published"),
+        "cell {cell_id} is not published"
+    );
+    let body_path = out.join(entry["path"].as_str().expect("path"));
+    let bytes = std::fs::read(&body_path).unwrap();
+    assert_eq!(
+        entry["body_sha256"].as_str(),
+        Some(engineering_challenge::util::sha256_hex(&bytes).as_str()),
+        "the indexed hash must match the published body"
+    );
+
+    let document: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_slice(&bytes).unwrap();
+    let missing = stress_support::manifest::missing_required_fields(&document);
+    assert!(missing.is_empty(), "missing required fields: {missing:?}");
+    assert_eq!(document["run_status"].as_str(), Some("success"));
+    assert!(
+        document["incidents"]["discontinuity_incidents"].is_u64(),
+        "incidents.discontinuity_incidents must be an exported count"
+    );
+}
+
+/// A directory in place of the index is an I/O error, not an empty index, and
+/// the cell must publish no body.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn index_directory_fixture_fails_closed() {
+    let directory = tempfile::tempdir().unwrap();
+    let out = directory.path().join("manifests");
+    std::fs::create_dir_all(out.join("index.json")).unwrap();
+
+    let config = CellConfig {
+        seed: 22,
+        symbols: 60,
+        events: 5,
+        limits: Some((20, 2)),
+        ..headless_cell_config(22, 60)
+    };
+    let outcome = stress_support::runner::run_cell(directory.path(), &config, Some(&out)).await;
+    assert!(!outcome.acceptance.valid, "an unreadable index must fail");
+    assert_eq!(
+        outcome.acceptance.failure_class.as_deref(),
+        Some("manifest_index_error")
+    );
+    let entries: Vec<String> = std::fs::read_dir(&out)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        entries,
+        vec!["index.json".to_owned()],
+        "no body may be published when the index cannot be read"
+    );
+}
+
+/// A permission error is likewise an error, not an empty index. The test
+/// skips itself when the runner is privileged enough to bypass the mode.
+#[cfg(unix)]
+#[test]
+fn unreadable_index_fails_closed() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("index.json");
+    std::fs::write(&path, br#"{"schema_version":1,"cells":{}}"#).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read_to_string(&path).is_ok() {
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        return;
+    }
+    let error = stress_support::manifest::read_index(&path)
+        .expect_err("an unreadable index must not read as empty");
+    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+}
