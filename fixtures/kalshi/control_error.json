@@ -1,0 +1,8 @@
+{
+  "id": 7,
+  "type": "error",
+  "msg": {
+    "code": 7,
+    "msg": "subscribed market not found"
+  }
+}

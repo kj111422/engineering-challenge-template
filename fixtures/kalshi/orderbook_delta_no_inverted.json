@@ -1,0 +1,14 @@
+{
+  "type": "orderbook_delta",
+  "sid": 2,
+  "seq": 4,
+  "sending_ts_ms": 1669149841500,
+  "msg": {
+    "market_ticker": "FED-23DEC-T3.00",
+    "clock": 4182062,
+    "price_dollars": "0.9600",
+    "delta_fp": "-54.00",
+    "side": "no",
+    "ts_ms": 1669149841400
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "type": "ticker",
+  "sid": 2,
+  "seq": 5,
+  "sending_ts_ms": 1669149841999,
+  "msg": {
+    "market_ticker": "FED-23DEC-T3.00",
+    "yes_bid": 8,
+    "yes_ask": 9,
+    "price": 8,
+    "volume": 1234,
+    "dollar_volume": "618.00",
+    "ts": 1669149841
+  }
+}

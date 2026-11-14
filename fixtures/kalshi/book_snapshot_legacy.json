@@ -1,0 +1,10 @@
+{
+  "type": "orderbook_snapshot",
+  "sid": 1,
+  "seq": 1,
+  "msg": {
+    "market_ticker": "LEGACY-23DEC",
+    "yes": [[8, 300], [22, 333]],
+    "no": [[54, 20], [56, 146]]
+  }
+}

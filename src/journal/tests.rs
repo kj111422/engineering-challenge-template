@@ -313,6 +313,34 @@ fn checked_in_fixtures_round_trip_byte_for_byte() {
 }
 
 #[test]
+fn checked_in_kalshi_fixtures_round_trip_byte_for_byte() {
+    let temp = TempDir::new().expect("tempdir");
+    let handle = start(temp.path(), "run");
+    let fixtures: [&[u8]; 3] = [
+        include_bytes!("../../fixtures/kalshi/book_snapshot.json"),
+        include_bytes!("../../fixtures/kalshi/orderbook_delta_yes.json"),
+        include_bytes!("../../fixtures/kalshi/market_lifecycle_activated.json"),
+    ];
+    for (index, fixture) in fixtures.iter().enumerate() {
+        append(
+            &handle,
+            SourceId::new(0, 0),
+            1,
+            index as u64 + 1,
+            fixture,
+            DecodeOutcome::decoded(1),
+        );
+    }
+    handle
+        .shutdown(Duration::from_secs(2))
+        .expect("journal shutdown");
+    let records = read_records(&run_directory(temp.path(), "run")).expect("read records");
+    for (record, fixture) in records.iter().zip(fixtures.iter()) {
+        assert_eq!(record.payload.as_slice(), *fixture);
+    }
+}
+
+#[test]
 fn record_order_matches_source_epoch_and_sequence() {
     let temp = TempDir::new().expect("tempdir");
     let handle = start(temp.path(), "run");
